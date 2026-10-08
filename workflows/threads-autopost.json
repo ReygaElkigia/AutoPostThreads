@@ -4,9 +4,9 @@
   "nodes": [
     {
       "parameters": {
-        "content": "## Threads AutoPost — Cerita AI\nWorkflow ini membuat cerita dengan Claude lalu mempostingnya ke Threads sebagai **utas** (bagian 1 = post utama, bagian berikutnya = balasan berantai).\n\n**Jam posting** diatur di node **Jadwal Posting** (cron, default dari `POST_CRON` di `.env`, contoh `0 7,12,19,21 * * *` = jam 07:00, 12:00, 19:00, 21:00).\n**Gaya cerita** diatur lewat `STORY_*` di `.env`; aturan menulis lengkap ada di node **Susun Prompt**.\n**Mode uji**: isi `DRY_RUN=true` di `.env` → cerita hanya dibuat, tidak diposting.\n\n3 cara menjalankan:\n1. Otomatis sesuai jadwal (workflow harus di-*Publish*/aktif)\n2. Tombol *Execute workflow* dari **Tes Manual**\n3. `POST /webhook/threads-autopost` dengan header `x-webhook-secret` (lihat README)",
+        "content": "## Threads AutoPost — Cerita AI\nWorkflow ini membuat cerita dengan Claude lalu mempostingnya ke Threads sebagai **utas** (bagian 1 = post utama, bagian berikutnya = balasan berantai).\n\n**Jam posting** diatur di node **Jadwal Posting** (cron, default dari `POST_CRON` di `.env`, contoh `0 7,12,19,21 * * *` = jam 07:00, 12:00, 19:00, 21:00).\n**Gaya cerita** diatur lewat `STORY_*` di `.env`; aturan menulis lengkap ada di node **Susun Prompt**.\n**Mode uji**: isi `DRY_RUN=true` di `.env` → cerita hanya dibuat, tidak diposting.\n**Notifikasi Telegram** (opsional): isi `TELEGRAM_BOT_TOKEN` dan `TELEGRAM_CHAT_ID` di `.env`.\n\n3 cara menjalankan:\n1. Otomatis sesuai jadwal (workflow harus di-*Publish*/aktif)\n2. Tombol *Execute workflow* dari **Tes Manual**\n3. `POST /webhook/threads-autopost` dengan header `x-webhook-secret` (lihat README)",
         "width": 1060,
-        "height": 400,
+        "height": 420,
         "color": 7
       },
       "id": "f216b59f-a4e0-0126-7651-a8df37c0a10c",
@@ -15,7 +15,7 @@
       "typeVersion": 1,
       "position": [
         -80,
-        -460
+        -480
       ]
     },
     {
@@ -460,6 +460,75 @@
         660,
         820
       ]
+    },
+    {
+      "parameters": {
+        "content": "## Notifikasi Telegram (opsional)\nIsi `TELEGRAM_BOT_TOKEN` dan `TELEGRAM_CHAT_ID` di `.env` untuk menerima kabar: utas terposting (dengan link), cerita mode uji, token diperpanjang, dan **error** dari node mana pun.\n\n`TELEGRAM_NOTIFY=error` → hanya error. Kosongkan token → notifikasi mati.\n\nNode **Kalau Error** otomatis jalan setiap kali workflow ini gagal.",
+        "width": 820,
+        "height": 420,
+        "color": 4
+      },
+      "id": "dba6fe2c-8b31-0f4e-da7a-410d0e46f480",
+      "name": "Catatan Telegram",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1100,
+        640
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "291a8b3d-d30f-055d-bdc4-3f9b3650989c",
+      "name": "Kalau Error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        1160,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Susun pesan notifikasi Telegram. Kalau Telegram belum diatur di .env, node ini tidak mengeluarkan apa-apa\n// sehingga node \"Kirim Telegram\" tidak dijalankan.\n// TELEGRAM_NOTIFY: \"semua\" (default) = posting, mode uji, perpanjang token, dan error; \"error\" = error saja; \"off\" = mati.\nconst token = String($env.TELEGRAM_BOT_TOKEN || '').trim();\nconst chatId = String($env.TELEGRAM_CHAT_ID || '').trim();\nconst mode = String($env.TELEGRAM_NOTIFY || 'semua').trim().toLowerCase();\nif (!token || !chatId || /^(off|false|no|0)$/.test(mode)) return [];\n\nconst d = $input.first().json;\nconst MAX = 3900; // batas Telegram 4096 karakter per pesan\nconst cut = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);\nconst tanggal = (iso) => (iso ? DateTime.fromISO(iso, { setZone: true }).setLocale('id').toFormat('d LLLL yyyy, HH:mm') : '-');\n\nlet messages = [];\n\nif ($('Kalau Error').isExecuted) {\n  const err = d.execution?.error || d.trigger?.error || {};\n  messages.push(\n    [\n      '❌ Threads AutoPost gagal',\n      '',\n      `Node: ${d.execution?.lastNodeExecuted || err.node?.name || '-'}`,\n      `Error: ${cut(String(err.message || 'tidak diketahui'), 500)}`,\n      err.description ? `Detail: ${cut(String(err.description), 800)}` : null,\n      d.execution?.url ? `\\nLihat di n8n: ${d.execution.url}` : null,\n    ]\n      .filter((l) => l !== null)\n      .join('\\n')\n  );\n} else if (mode === 'error') {\n  return [];\n} else if ($('Ringkasan & Riwayat').isExecuted) {\n  messages.push(\n    [\n      '✅ Utas baru terposting',\n      '',\n      `Judul: ${d.judul}`,\n      `Kategori: ${d.kategori}`,\n      `Bagian: ${d.post_ids.length}${d.topic_tag ? ` · Topik: ${d.topic_tag}` : ''}`,\n      '',\n      d.permalink || 'Link belum tersedia, cek langsung di Threads.',\n    ].join('\\n')\n  );\n} else if ($('Pratinjau (Dry Run)').isExecuted) {\n  // Kirim cerita lengkap supaya bisa dibaca dari HP. Kalau kepanjangan, dipecah jadi beberapa pesan.\n  const header = [\n    '🧪 Mode uji — cerita TIDAK diposting',\n    `Judul: ${d.judul}`,\n    `Kategori: ${d.kategori}${d.topic_tag ? ` · Topik: ${d.topic_tag}` : ''}`,\n  ].join('\\n');\n  let cur = header;\n  for (const part of d.bagian) {\n    const block = `\\n\\n———\\n\\n${part}`;\n    if (cur.length + block.length > MAX) {\n      messages.push(cur);\n      cur = part;\n    } else {\n      cur += block;\n    }\n  }\n  messages.push(cur);\n} else if ($('Simpan Token Baru').isExecuted) {\n  messages.push(`🔑 Token Threads berhasil diperpanjang.\\nBerlaku sampai: ${tanggal(d.berlaku_sampai)}`);\n}\n\nreturn messages.map((text) => ({ json: { text } }));"
+      },
+      "id": "1b015032-c6ee-2158-6fe3-c91f9060fd1c",
+      "name": "Susun Pesan Telegram",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.TELEGRAM_API_HOST || 'https://api.telegram.org').replace(/\\/+$/, '') }}/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $env.TELEGRAM_CHAT_ID, text: $json.text }) }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 1100
+            }
+          }
+        }
+      },
+      "id": "508524e6-73ab-064a-7893-0ec5c57228d3",
+      "name": "Kirim Telegram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1640,
+        900
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
     }
   ],
   "connections": {
@@ -698,6 +767,61 @@
         [
           {
             "node": "Simpan Token Baru",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ringkasan & Riwayat": {
+      "main": [
+        [
+          {
+            "node": "Susun Pesan Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pratinjau (Dry Run)": {
+      "main": [
+        [
+          {
+            "node": "Susun Pesan Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simpan Token Baru": {
+      "main": [
+        [
+          {
+            "node": "Susun Pesan Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Kalau Error": {
+      "main": [
+        [
+          {
+            "node": "Susun Pesan Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Susun Pesan Telegram": {
+      "main": [
+        [
+          {
+            "node": "Kirim Telegram",
             "type": "main",
             "index": 0
           }

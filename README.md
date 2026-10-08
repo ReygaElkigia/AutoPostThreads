@@ -17,6 +17,7 @@ Fitur lain:
 - **Webhook** untuk posting kapan saja dengan topik atau ide cerita tertentu.
 - **Token Threads diperpanjang otomatis** setiap minggu (token berlaku 60 hari).
 - Topik Threads (*topic tag*) dipilih AI atau ditentukan sendiri.
+- **Notifikasi Telegram** (opsional): kabar setiap utas terposting (dengan link), cerita mode uji untuk dibaca dari HP, dan peringatan kalau ada error.
 
 ## Cara kerja
 
@@ -31,6 +32,10 @@ flowchart LR
   F -->|"DRY_RUN=false"| H["Posting ke Threads<br/>bagian 1 = post utama<br/>bagian 2..n = balasan berantai"]
   H --> I["Simpan riwayat"]
   J["Setiap Minggu 03:17"] --> K["Perpanjang token Threads"]
+  G --> T["Notifikasi Telegram<br/>(opsional)"]
+  I --> T
+  K --> T
+  X["Error di node mana pun"] --> T
 ```
 
 Semua logika ada di satu workflow n8n: [`workflows/threads-autopost.json`](workflows/threads-autopost.json).
@@ -120,7 +125,7 @@ docker compose exec n8n node /scripts/threads-token.js refresh
 ## Langkah 7 — Uji coba, lalu posting beneran
 
 1. Di n8n, buka workflow lalu klik **Execute workflow**. Kalau diminta memilih trigger, pilih **Tes Manual**.
-2. Buka node **Pratinjau (Dry Run)** untuk membaca cerita yang dibuat AI. Belum ada yang diposting.
+2. Buka node **Pratinjau (Dry Run)** untuk membaca cerita yang dibuat AI. Belum ada yang diposting. Kalau [notifikasi Telegram](#notifikasi-telegram-opsional) sudah diatur, ceritanya juga dikirim ke Telegram.
 3. Kalau hasilnya sudah cocok, ubah `.env` menjadi `DRY_RUN=false`, lalu jalankan:
 
    ```bash
@@ -187,6 +192,39 @@ Semua field di body opsional:
 
 Webhook langsung membalas `202` lalu bekerja di belakang. Hasilnya bisa dilihat di menu **Executions**. Bisa juga dipanggil dari aplikasi lain (Telegram bot, Google Sheets, shortcut HP, dsb.).
 
+## Notifikasi Telegram (opsional)
+
+Supaya tidak perlu membuka n8n setiap hari, workflow bisa mengirim kabar ke Telegram:
+
+| Kejadian | Isi pesan |
+| --- | --- |
+| Utas berhasil diposting | Judul, kategori, jumlah bagian, dan link post |
+| Mode uji (`DRY_RUN`) | Cerita lengkap, jadi bisa dibaca dan dinilai dari HP |
+| Token diperpanjang (tiap Minggu) | Tanggal token berlaku sampai |
+| **Error** di node mana pun | Nama node, pesan error, dan link ke eksekusi di n8n |
+
+Cara mengaktifkan:
+
+1. Di Telegram, buka [@BotFather](https://t.me/BotFather), kirim `/newbot`, ikuti petunjuknya, lalu salin token bot ke `TELEGRAM_BOT_TOKEN` di `.env`.
+2. Buka bot barumu dan kirim `/start`. Kalau mau notifikasi masuk ke grup, tambahkan bot ke grup lalu kirim satu pesan di grup itu.
+3. Cari chat ID:
+
+   ```bash
+   docker compose up -d
+   docker compose exec n8n node /scripts/telegram.js chat-id
+   ```
+
+   Salin angka chat ID ke `TELEGRAM_CHAT_ID` di `.env` (chat ID grup diawali tanda minus), lalu jalankan `docker compose up -d` lagi.
+4. Kirim pesan uji:
+
+   ```bash
+   docker compose exec n8n node /scripts/telegram.js tes
+   ```
+
+Mau dikabari kalau ada masalah saja? Isi `TELEGRAM_NOTIFY=error`. Untuk mematikan, isi `off` atau kosongkan `TELEGRAM_BOT_TOKEN`.
+
+Kalau Telegram gagal dikirim (misalnya chat ID salah), posting ke Threads tetap jalan dan tetap dianggap berhasil. Link "Lihat di n8n" pada pesan error memakai `WEBHOOK_URL`, jadi isi dengan alamat n8n yang bisa kamu buka dari HP kalau n8n ada di VPS.
+
 ## Token diperpanjang otomatis
 
 Token long-lived Threads berlaku 60 hari. Setiap Minggu jam 03:17, workflow memperpanjang token dan menyimpan token baru di data internal workflow, jadi kamu tidak perlu mengganti `.env` tiap 2 bulan.
@@ -213,7 +251,8 @@ Perubahan yang kamu buat sendiri di editor n8n akan tertimpa, jadi catat dulu ka
 ├── workflows/
 │   └── threads-autopost.json   # Workflow n8n yang di-import
 └── scripts/
-    └── threads-token.js        # Alat bantu cek / tukar / refresh token Threads
+    ├── threads-token.js        # Alat bantu cek / tukar / refresh token Threads
+    └── telegram.js             # Alat bantu cari chat ID dan kirim pesan uji Telegram
 ```
 
 ## Masalah yang sering muncul
@@ -228,6 +267,7 @@ Perubahan yang kamu buat sendiri di editor n8n akan tertimpa, jadi catat dulu ka
 | Claude error 400 saat memakai model lama | Kosongkan `AI_EFFORT` dan isi `AI_FALLBACK=off`. |
 | Tidak ada posting di jam yang ditentukan | Pastikan workflow sudah di-**Publish**, `DRY_RUN=false`, dan n8n/komputer menyala. Cek menu **Executions**. |
 | Webhook membalas `401` | Header `x-webhook-secret` tidak sama dengan `WEBHOOK_SECRET` di `.env`. |
+| Notifikasi Telegram tidak masuk | Jalankan `docker compose exec n8n node /scripts/telegram.js tes` untuk melihat pesan error-nya. Pastikan sudah mengirim `/start` ke bot. |
 
 ## Catatan
 
