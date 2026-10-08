@@ -1,0 +1,714 @@
+{
+  "id": "ThreadsAutoPost1",
+  "name": "Threads AutoPost - Cerita AI",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Threads AutoPost — Cerita AI\nWorkflow ini membuat cerita dengan Claude lalu mempostingnya ke Threads sebagai **utas** (bagian 1 = post utama, bagian berikutnya = balasan berantai).\n\n**Jam posting** diatur di node **Jadwal Posting** (cron, default dari `POST_CRON` di `.env`, contoh `0 7,12,19,21 * * *` = jam 07:00, 12:00, 19:00, 21:00).\n**Gaya cerita** diatur lewat `STORY_*` di `.env`; aturan menulis lengkap ada di node **Susun Prompt**.\n**Mode uji**: isi `DRY_RUN=true` di `.env` → cerita hanya dibuat, tidak diposting.\n\n3 cara menjalankan:\n1. Otomatis sesuai jadwal (workflow harus di-*Publish*/aktif)\n2. Tombol *Execute workflow* dari **Tes Manual**\n3. `POST /webhook/threads-autopost` dengan header `x-webhook-secret` (lihat README)",
+        "width": 1060,
+        "height": 400,
+        "color": 7
+      },
+      "id": "f216b59f-a4e0-0126-7651-a8df37c0a10c",
+      "name": "Catatan Utama",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -80,
+        -460
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Perpanjang token otomatis\nToken long-lived Threads berlaku **60 hari**. Bagian ini memperpanjangnya setiap Minggu jam 03:17, dan token baru disimpan di data internal workflow (static data).\n\nKalau token di `.env` diganti manual, workflow otomatis memakai token baru dari `.env` itu.",
+        "width": 1060,
+        "height": 300,
+        "color": 5
+      },
+      "id": "9a735ce0-2042-643c-ca58-81fef6dfa847",
+      "name": "Catatan Token",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -80,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "={{ $env.POST_CRON || '0 7,12,19,21 * * *' }}"
+            }
+          ]
+        }
+      },
+      "id": "9d68d85a-97d1-bca9-ceb7-3d8f4f2a4a4d",
+      "name": "Jadwal Posting",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "0524fdd9-f2b3-31ea-ed69-f7fcc7af42e0",
+      "name": "Tes Manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "threads-autopost",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "11d8f5fe-aac0-a05e-b152-134ecfb86827",
+      "name": "Webhook Manual",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        420
+      ],
+      "webhookId": "20138f86-c596-9909-eeac-e3c80a6ed076"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Cek secret supaya webhook ini tidak bisa dipakai orang lain.\n// Kirim secret lewat header \"x-webhook-secret\" atau query \"?secret=\".\nconst secret = String($env.WEBHOOK_SECRET || '').trim();\nconst req = $input.first().json;\nconst given = String(req.headers?.['x-webhook-secret'] || req.query?.secret || '').trim();\n\nreturn [\n  {\n    json: {\n      authorized: secret.length > 0 && given === secret,\n      body: req.body && typeof req.body === 'object' ? req.body : {},\n    },\n  },\n];"
+      },
+      "id": "57c03814-b29e-7856-fead-716b9bc2785c",
+      "name": "Validasi Webhook",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "dcfc9c0a-3122-24da-4827-5a39bcf33d6e",
+              "leftValue": "={{ $json.authorized }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "717745c9-1224-f265-4929-43e10aa954b1",
+      "name": "Secret Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\n  \"ok\": true,\n  \"pesan\": \"Permintaan diterima. Cerita sedang dibuat, cek hasilnya di menu Executions n8n.\"\n}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "fc4efe38-8175-c486-d0d7-7fd3d1ed2682",
+      "name": "Respon Diterima",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\n  \"ok\": false,\n  \"pesan\": \"Secret salah atau WEBHOOK_SECRET belum diisi di .env.\"\n}",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "id": "83812e2e-ed78-f213-30ca-51145dd07521",
+      "name": "Respon Ditolak",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Semua pengaturan dibaca dari environment variable (file .env), lihat README.\n// Node ini juga memilih kategori cerita dan jumlah bagian untuk postingan kali ini.\n\nconst env = (key, fallback = '') => {\n  const v = $env[key];\n  return v === undefined || v === null || String(v).trim() === '' ? fallback : String(v).trim();\n};\nconst toInt = (v, fallback) => {\n  const n = parseInt(v, 10);\n  return Number.isFinite(n) ? n : fallback;\n};\nconst toBool = (v) => /^(1|true|yes|ya|y|on)$/i.test(String(v ?? '').trim());\nconst clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));\nconst randInt = (lo, hi) => lo + Math.floor(Math.random() * (hi - lo + 1));\n\nconst fromWebhook = $('Webhook Manual').isExecuted;\nconst fromSchedule = $('Jadwal Posting').isExecuted;\nconst source = fromWebhook ? 'webhook' : fromSchedule ? 'jadwal' : 'manual';\nconst body = fromWebhook ? $input.first().json.body || {} : {};\n\nconst store = $getWorkflowStaticData('global');\nconst history = Array.isArray(store.history) ? store.history : [];\n\nconst dryRun = fromWebhook && body.dry_run !== undefined ? toBool(body.dry_run) : toBool(env('DRY_RUN', 'false'));\n\n// --- Kategori cerita: dari webhook, atau diacak dari STORY_NICHES (tidak sama dengan postingan terakhir)\nconst niches = env(\n  'STORY_NICHES',\n  'cerita horor kos-kosan|kisah lucu di kantor|kisah inspiratif perantau|cerita cinta masa SMA|kisah haru tentang orang tua'\n)\n  .split('|')\n  .map((s) => s.trim())\n  .filter(Boolean);\nlet kategori = String(body.kategori || '').trim();\nif (!kategori) {\n  const last = history.length ? history[history.length - 1].kategori : null;\n  const pool = niches.length > 1 ? niches.filter((n) => n !== last) : niches;\n  kategori = pool[Math.floor(Math.random() * pool.length)];\n}\n\n// --- Jumlah bagian utas\nconst minParts = clamp(toInt(env('STORY_MIN_PARTS'), 3), 1, 10);\nconst maxParts = clamp(toInt(env('STORY_MAX_PARTS'), 6), minParts, 10);\nconst parts = clamp(toInt(body.jumlah_bagian, 0) || randInt(minParts, maxParts), 1, 10);\n\n// --- Token Threads: pakai token hasil refresh otomatis kalau ada, kalau tidak pakai dari .env\nconst envToken = env('THREADS_ACCESS_TOKEN');\nconst fingerprint = (t) => (t ? t.slice(-12) : '');\nif (store.threadsToken && store.envTokenFingerprint !== fingerprint(envToken)) {\n  // Token di .env sudah diganti manual, jadi token lama hasil refresh dibuang\n  delete store.threadsToken;\n  delete store.threadsTokenExpiresAt;\n  delete store.envTokenFingerprint;\n}\nconst threadsToken = store.threadsToken || envToken;\nif (!dryRun && !threadsToken) throw new Error('THREADS_ACCESS_TOKEN belum diisi di file .env');\nif (!env('ANTHROPIC_API_KEY')) throw new Error('ANTHROPIC_API_KEY belum diisi di file .env');\n\nconst threadsHost = env('THREADS_API_HOST', 'https://graph.threads.net').replace(/\\/+$/, '');\nconst jitterMinutes = clamp(toInt(env('POST_JITTER_MINUTES'), 0), 0, 55);\n\nreturn [\n  {\n    json: {\n      source,\n      dryRun,\n      kategori,\n      ide: String(body.ide || '').trim(),\n      parts,\n      style: env(\n        'STORY_STYLE',\n        'Bahasa Indonesia santai sehari-hari pakai aku-kamu, seperti orang curhat di Threads. Kalimat pendek, jujur, dan relate.'\n      ),\n      persona: env('STORY_PERSONA'),\n      extraInstructions: env('STORY_EXTRA_INSTRUCTIONS'),\n      today: $now.setLocale('id').toFormat('cccc, d LLLL yyyy'),\n      recentTitles: history.slice(-15).map((h) => `${h.judul} (${h.kategori})`),\n      numbering: toBool(env('THREAD_NUMBERING', 'true')),\n      topicTagMode: env('THREADS_TOPIC_TAG', 'auto'),\n      claude: {\n        model: env('AI_MODEL', 'claude-opus-5-5'),\n        effort: env('AI_EFFORT', 'medium'),\n        // \"default\" = kalau model menolak, API otomatis mencoba model cadangan. Isi \"off\" untuk mematikan.\n        fallback: /^(off|false|no|0)$/i.test(env('AI_FALLBACK', 'default')) ? '' : 'default',\n      },\n      threadsApi: `${threadsHost}/v1.0`,\n      threadsUserId: env('THREADS_USER_ID', 'me'),\n      threadsToken,\n      tokenSource: store.threadsToken ? 'refresh otomatis' : '.env',\n      publishDelaySeconds: clamp(toInt(env('PUBLISH_DELAY_SECONDS'), 10), 1, 60),\n      // Jeda acak hanya untuk posting terjadwal yang berjalan otomatis, supaya jam posting tidak terlalu kaku\n      jitterSeconds: fromSchedule && $execution.mode === 'production' && jitterMinutes > 0 ? randInt(1, jitterMinutes * 60) : 1,\n      historySize: clamp(toInt(env('HISTORY_SIZE'), 30), 1, 200),\n    },\n  },\n];"
+      },
+      "id": "59a7d3b9-c50c-7fd0-13f8-6d0a4323e858",
+      "name": "Siapkan Konfigurasi",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "amount": "={{ $json.jitterSeconds }}",
+        "unit": "seconds"
+      },
+      "id": "0d689e77-f8a0-2fed-2d2f-c76f4c4955a3",
+      "name": "Jeda Acak",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1100,
+        200
+      ],
+      "webhookId": "9d529bd1-b098-8a27-da29-75481b7adc92"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prompt untuk Claude. Ubah aturan menulis di sini kalau pengaturan STORY_* di .env belum cukup.\nconst cfg = $('Siapkan Konfigurasi').first().json;\n\nconst system = [\n  'Kamu penulis konten Threads berbahasa Indonesia yang ahli storytelling.',\n  'Tugasmu menulis satu utas (thread) cerita yang membuat orang berhenti scroll dan membaca sampai habis.',\n  '',\n  'Aturan menulis:',\n  '- Bagian pertama adalah hook: pembuka yang bikin penasaran tanpa membocorkan akhir cerita.',\n  '- Setiap bagian maksimal 420 karakter, berisi satu momen, dan diakhiri dengan rasa penasaran supaya pembaca lanjut ke bagian berikutnya.',\n  '- Bagian terakhir berisi penutup yang memuaskan (twist, pelajaran, atau punchline), lalu satu pertanyaan ringan ke pembaca untuk memancing balasan.',\n  '- Kalimat pendek dan enak dibaca di HP. Boleh pakai baris baru di dalam satu bagian.',\n  '- Tanpa hashtag, tanpa format markdown (tanda bintang, heading), dan tanpa penomoran bagian karena nomor ditambahkan otomatis.',\n  '- Emoji secukupnya, paling banyak satu per bagian.',\n  '- Cerita harus orisinal dan masuk akal. Jangan memakai nama asli tokoh publik atau merek, dan hindari SARA, konten dewasa, serta kekerasan eksplisit.',\n  '',\n  'Field \"judul\" berisi ringkasan ide cerita (maksimal 10 kata, tidak ikut diposting).',\n  'Field \"topic_tag\" berisi satu topik Threads yang relevan (1-50 karakter, tanpa tanda #, titik, atau &), misalnya \"Cerita Horor\".',\n  'Field \"bagian\" berisi teks setiap bagian utas secara berurutan.',\n].join('\\n');\n\nconst user = [\n  `Tulis satu utas cerita dengan tepat ${cfg.parts} bagian.`,\n  '',\n  `Kategori: ${cfg.kategori}`,\n  cfg.ide ? `Ide cerita: ${cfg.ide}` : null,\n  `Gaya bahasa: ${cfg.style}`,\n  `Narator: ${cfg.persona || 'orang pertama (\"aku\") yang menceritakan pengalamannya sendiri'}`,\n  cfg.extraInstructions ? `Instruksi tambahan: ${cfg.extraInstructions}` : null,\n  `Hari ini: ${cfg.today}`,\n  '',\n  'Ide yang sudah pernah diposting (buat cerita yang berbeda dari daftar ini):',\n  cfg.recentTitles.length ? cfg.recentTitles.map((t) => `- ${t}`).join('\\n') : '(belum ada)',\n]\n  .filter((line) => line !== null)\n  .join('\\n');\n\nconst schema = {\n  type: 'object',\n  properties: {\n    judul: { type: 'string', description: 'Ringkasan ide cerita, maksimal 10 kata' },\n    topic_tag: { type: 'string', description: 'Satu topik Threads, 1-50 karakter, tanpa #, titik, atau &' },\n    bagian: { type: 'array', items: { type: 'string' }, description: 'Teks setiap bagian utas secara berurutan' },\n  },\n  required: ['judul', 'topic_tag', 'bagian'],\n  additionalProperties: false,\n};\n\nconst body = {\n  model: cfg.claude.model,\n  max_tokens: 16000,\n  system,\n  messages: [{ role: 'user', content: user }],\n  output_config: { format: { type: 'json_schema', schema } },\n};\nif (cfg.claude.effort) body.output_config.effort = cfg.claude.effort;\nif (cfg.claude.fallback) body.fallbacks = cfg.claude.fallback;\n\nconst headers = { 'anthropic-version': '2023-06-01', 'content-type': 'application/json' };\nif (body.fallbacks) headers['anthropic-beta'] = 'server-side-fallback-2026-07-01';\n\nreturn [{ json: { claudeBody: body, claudeHeaders: headers } }];"
+      },
+      "id": "576d852b-9df7-89a8-ceed-776c149f0a03",
+      "name": "Susun Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\\/+$/, '') }}/v1/messages",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ JSON.stringify(Object.assign({ 'x-api-key': $env.ANTHROPIC_API_KEY }, $json.claudeHeaders)) }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.claudeBody) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "e92cc038-1fb6-b5c4-06cb-767b063163f3",
+      "name": "Generate Cerita (Claude)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        200
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Ubah jawaban Claude jadi daftar postingan siap kirim (batas Threads: 500 karakter per post).\nconst cfg = $('Siapkan Konfigurasi').first().json;\nconst res = $input.first().json;\n\nif (res.stop_reason === 'refusal') {\n  throw new Error('Claude menolak membuat cerita ini (stop_reason: refusal). Coba ganti kategori atau instruksi.');\n}\nif (res.stop_reason === 'max_tokens') {\n  throw new Error('Jawaban Claude terpotong (stop_reason: max_tokens). Kurangi jumlah bagian.');\n}\nconst raw = (res.content || [])\n  .filter((b) => b.type === 'text')\n  .map((b) => b.text)\n  .join('');\nlet story;\ntry {\n  story = JSON.parse(raw);\n} catch (e) {\n  throw new Error('Jawaban Claude bukan JSON yang valid: ' + raw.slice(0, 300));\n}\nif (!Array.isArray(story.bagian) || story.bagian.length === 0) {\n  throw new Error('Claude tidak mengembalikan bagian cerita.');\n}\n\n// Threads menghitung karakter non-ASCII (misalnya emoji) per byte UTF-8, jadi dihitung dengan cara yang sama.\nconst weight = (s) => {\n  let n = 0;\n  for (const ch of s) {\n    const cp = ch.codePointAt(0);\n    n += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;\n  }\n  return n;\n};\n\nconst clean = (s) =>\n  String(s)\n    .replace(/\\r\\n/g, '\\n')\n    .replace(/\\*\\*|__/g, '')\n    .replace(/^\\s*(?:\\(?\\d{1,2}\\s*\\/\\s*\\d{0,2}\\)?|\\d{1,2}[.)])\\s+/, '') // nomor bagian buatan model\n    .replace(/(^|\\s)#[\\p{L}\\p{N}_]+/gu, '$1') // hashtag\n    .replace(/[ \\t]+\\n/g, '\\n')\n    .replace(/[ \\t]{2,}/g, ' ')\n    .replace(/\\n{3,}/g, '\\n\\n')\n    .trim();\n\n// Pecah teks yang kepanjangan per kalimat jadi beberapa post yang panjangnya kira-kira sama\n// (per kata kalau satu kalimat pun masih kepanjangan)\nconst chunk = (text, max) => {\n  if (weight(text) <= max) return [text];\n  const target = Math.ceil(weight(text) / Math.ceil(weight(text) / max));\n  const sentences = text.match(/[^.!?…\\n]*[.!?…]+[\"”’')]*\\s*|[^.!?…\\n]+\\s*|\\n+/g) || [text];\n  const out = [];\n  let cur = '';\n  const flush = () => {\n    if (cur.trim()) out.push(cur.trim());\n    cur = '';\n  };\n  for (const s of sentences) {\n    if (weight(s) > max) {\n      flush();\n      for (const w of s.split(/\\s+/).filter(Boolean)) {\n        const next = cur ? `${cur} ${w}` : w;\n        if (weight(next) <= max) {\n          cur = next;\n          continue;\n        }\n        flush();\n        for (const ch of w) {\n          if (weight(cur + ch) > max) flush();\n          cur += ch;\n        }\n      }\n      continue;\n    }\n    if (weight(cur + s) > max || weight(cur) >= target) flush();\n    cur += s;\n  }\n  flush();\n  return out;\n};\n\nconst LIMIT = 500;\nconst reserve = cfg.numbering ? 10 : 0; // ruang untuk \"\\n\\n(10/10)\"\nconst posts = story.bagian\n  .map(clean)\n  .filter(Boolean)\n  .flatMap((t) => chunk(t, LIMIT - reserve));\nif (posts.length === 0) throw new Error('Semua bagian cerita kosong setelah dibersihkan.');\n\nconst sanitizeTag = (t) =>\n  [...String(t || '').replace(/[#.&]/g, '').replace(/\\s+/g, ' ').trim()].slice(0, 50).join('').trim();\nconst tagMode = cfg.topicTagMode.toLowerCase();\nconst topicTag =\n  tagMode === 'auto' ? sanitizeTag(story.topic_tag) : /^(off|none|false|0)$/.test(tagMode) ? '' : sanitizeTag(cfg.topicTagMode);\n\nreturn posts.map((text, i) => {\n  const finalText = cfg.numbering && posts.length > 1 ? `${text}\\n\\n(${i + 1}/${posts.length})` : text;\n  return {\n    json: {\n      index: i,\n      total: posts.length,\n      text: finalText,\n      panjang: weight(finalText),\n      topic_tag: i === 0 ? topicTag : '',\n      judul: String(story.judul || '').trim(),\n      kategori: cfg.kategori,\n      dryRun: cfg.dryRun,\n    },\n  };\n});"
+      },
+      "id": "34db9cee-98b0-da95-0e00-67bd8e2bc7f2",
+      "name": "Olah Cerita",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "af9f1ca0-1852-2bd1-f203-6d0df9494856",
+              "leftValue": "={{ $json.dryRun }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "5e35ac34-7edb-c31a-3e21-54a47cf1a6ef",
+      "name": "Mode Uji?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1980,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Mode uji (DRY_RUN): cerita hanya ditampilkan di sini, tidak diposting ke Threads.\nconst posts = $input.all().map((i) => i.json);\n\nreturn [\n  {\n    json: {\n      ok: true,\n      dry_run: true,\n      pesan: 'Mode uji: cerita TIDAK diposting ke Threads.',\n      judul: posts[0].judul,\n      kategori: posts[0].kategori,\n      topic_tag: posts[0].topic_tag,\n      jumlah_bagian: posts.length,\n      bagian: posts.map((p) => p.text),\n      panjang_karakter: posts.map((p) => p.panjang),\n    },\n  },\n];"
+      },
+      "id": "7bef44ca-ed0f-4250-2436-399c3de9f7d5",
+      "name": "Pratinjau (Dry Run)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "f599f95c-0271-fb4c-25a1-fd6efb9ac4ca",
+      "name": "Loop Bagian",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        2200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Siapkan Konfigurasi').first().json.threadsApi }}/{{ $('Siapkan Konfigurasi').first().json.threadsUserId }}/threads",
+        "sendQuery": true,
+        "specifyQuery": "json",
+        "jsonQuery": "={{ JSON.stringify(Object.assign({ media_type: 'TEXT', text: $json.text, access_token: $('Siapkan Konfigurasi').first().json.threadsToken }, $json.topic_tag ? { topic_tag: $json.topic_tag } : {}, $runIndex > 0 ? { reply_to_id: $('Publish Bagian').first(0, $runIndex - 1).json.id } : {})) }}",
+        "options": {}
+      },
+      "id": "8fb32dad-83c2-3dd2-344a-dd19e17de664",
+      "name": "Buat Container",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2420,
+        420
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "amount": "={{ $('Siapkan Konfigurasi').first().json.publishDelaySeconds }}",
+        "unit": "seconds"
+      },
+      "id": "a4e11b80-2201-4303-095d-d83c63e776b4",
+      "name": "Tunggu Proses",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2640,
+        420
+      ],
+      "webhookId": "d8b8895e-40b9-870c-36b0-e05bac0ccef2"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Siapkan Konfigurasi').first().json.threadsApi }}/{{ $('Siapkan Konfigurasi').first().json.threadsUserId }}/threads_publish",
+        "sendQuery": true,
+        "specifyQuery": "json",
+        "jsonQuery": "={{ JSON.stringify({ creation_id: $json.id, access_token: $('Siapkan Konfigurasi').first().json.threadsToken }) }}",
+        "options": {}
+      },
+      "id": "f7586d83-d2ef-47f1-4dfd-dd065643ae3c",
+      "name": "Publish Bagian",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2860,
+        420
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Siapkan Konfigurasi').first().json.threadsApi }}/{{ $('Publish Bagian').first(0, 0).json.id }}",
+        "sendQuery": true,
+        "specifyQuery": "json",
+        "jsonQuery": "={{ JSON.stringify({ fields: 'permalink', access_token: $('Siapkan Konfigurasi').first().json.threadsToken }) }}",
+        "options": {}
+      },
+      "id": "910b401e-40c5-cc6b-56c5-026e515071c2",
+      "name": "Ambil Permalink",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2420,
+        200
+      ],
+      "executeOnce": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Simpan riwayat cerita (supaya ide tidak berulang) dan tampilkan ringkasan hasil posting.\nconst cfg = $('Siapkan Konfigurasi').first().json;\nconst posts = $('Olah Cerita').all().map((i) => i.json);\nconst postIds = posts.map((_, run) => $('Publish Bagian').first(0, run)?.json?.id).filter(Boolean);\nconst permalink = $input.first().json.permalink || null;\n\nconst store = $getWorkflowStaticData('global');\nconst history = Array.isArray(store.history) ? store.history : [];\nhistory.push({\n  judul: posts[0].judul,\n  kategori: posts[0].kategori,\n  waktu: $now.toISO(),\n  post_id: postIds[0] || null,\n  permalink,\n});\nstore.history = history.slice(-cfg.historySize);\n\nreturn [\n  {\n    json: {\n      ok: true,\n      pesan: `Utas ${postIds.length} bagian berhasil diposting.`,\n      sumber: cfg.source,\n      judul: posts[0].judul,\n      kategori: posts[0].kategori,\n      topic_tag: posts[0].topic_tag,\n      permalink,\n      post_ids: postIds,\n      token_dari: cfg.tokenSource,\n      token_kedaluwarsa: store.threadsTokenExpiresAt || 'tidak diketahui (token dari .env)',\n    },\n  },\n];"
+      },
+      "id": "55a27198-3bac-839e-6914-784d8eb09e3c",
+      "name": "Ringkasan & Riwayat",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "17 3 * * 0"
+            }
+          ]
+        }
+      },
+      "id": "96c8270e-45df-5a4d-5235-7e2e55d13f6b",
+      "name": "Refresh Token Mingguan",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        820
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Ambil token Threads yang sedang dipakai (hasil refresh terakhir, atau dari .env).\nconst envToken = String($env.THREADS_ACCESS_TOKEN || '').trim();\nconst fingerprint = (t) => (t ? t.slice(-12) : '');\nconst store = $getWorkflowStaticData('global');\n\nconst useStored = store.threadsToken && store.envTokenFingerprint === fingerprint(envToken);\nconst token = useStored ? store.threadsToken : envToken;\nif (!token) throw new Error('THREADS_ACCESS_TOKEN belum diisi di file .env');\n\nconst host = String($env.THREADS_API_HOST || 'https://graph.threads.net').trim().replace(/\\/+$/, '');\n\nreturn [{ json: { token, host } }];"
+      },
+      "id": "c7cb33b8-2783-fe49-3961-be89b125345a",
+      "name": "Ambil Token Aktif",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        820
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.host }}/refresh_access_token",
+        "sendQuery": true,
+        "specifyQuery": "json",
+        "jsonQuery": "={{ JSON.stringify({ grant_type: 'th_refresh_token', access_token: $json.token }) }}",
+        "options": {}
+      },
+      "id": "a1945137-2c7d-2546-c217-ab8cf48b4b4e",
+      "name": "Refresh Token Threads",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        820
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Simpan token baru. Token long-lived Threads berlaku 60 hari dan diperpanjang setiap kali di-refresh.\nconst res = $input.first().json;\nif (!res.access_token) throw new Error('Refresh token gagal: ' + JSON.stringify(res).slice(0, 300));\n\nconst envToken = String($env.THREADS_ACCESS_TOKEN || '').trim();\nconst store = $getWorkflowStaticData('global');\nconst expiresAt = $now.plus({ seconds: Number(res.expires_in) || 0 }).toISO();\n\nstore.threadsToken = res.access_token;\nstore.threadsTokenExpiresAt = expiresAt;\nstore.envTokenFingerprint = envToken ? envToken.slice(-12) : '';\n\nreturn [{ json: { ok: true, pesan: 'Token Threads berhasil diperpanjang.', berlaku_sampai: expiresAt } }];"
+      },
+      "id": "36af7cf1-4fb2-e63a-cdd9-7d9f5e88c898",
+      "name": "Simpan Token Baru",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        820
+      ]
+    }
+  ],
+  "connections": {
+    "Jadwal Posting": {
+      "main": [
+        [
+          {
+            "node": "Siapkan Konfigurasi",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tes Manual": {
+      "main": [
+        [
+          {
+            "node": "Siapkan Konfigurasi",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Manual": {
+      "main": [
+        [
+          {
+            "node": "Validasi Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validasi Webhook": {
+      "main": [
+        [
+          {
+            "node": "Secret Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Secret Valid?": {
+      "main": [
+        [
+          {
+            "node": "Respon Diterima",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respon Ditolak",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respon Diterima": {
+      "main": [
+        [
+          {
+            "node": "Siapkan Konfigurasi",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Siapkan Konfigurasi": {
+      "main": [
+        [
+          {
+            "node": "Jeda Acak",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Jeda Acak": {
+      "main": [
+        [
+          {
+            "node": "Susun Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Susun Prompt": {
+      "main": [
+        [
+          {
+            "node": "Generate Cerita (Claude)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Cerita (Claude)": {
+      "main": [
+        [
+          {
+            "node": "Olah Cerita",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Olah Cerita": {
+      "main": [
+        [
+          {
+            "node": "Mode Uji?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mode Uji?": {
+      "main": [
+        [
+          {
+            "node": "Pratinjau (Dry Run)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Bagian",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Bagian": {
+      "main": [
+        [
+          {
+            "node": "Ambil Permalink",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Buat Container",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buat Container": {
+      "main": [
+        [
+          {
+            "node": "Tunggu Proses",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tunggu Proses": {
+      "main": [
+        [
+          {
+            "node": "Publish Bagian",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Publish Bagian": {
+      "main": [
+        [
+          {
+            "node": "Loop Bagian",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ambil Permalink": {
+      "main": [
+        [
+          {
+            "node": "Ringkasan & Riwayat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refresh Token Mingguan": {
+      "main": [
+        [
+          {
+            "node": "Ambil Token Aktif",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ambil Token Aktif": {
+      "main": [
+        [
+          {
+            "node": "Refresh Token Threads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refresh Token Threads": {
+      "main": [
+        [
+          {
+            "node": "Simpan Token Baru",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "tags": []
+}

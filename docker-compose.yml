@@ -1,0 +1,23 @@
+services:
+  n8n:
+    image: n8nio/n8n:2.42.5
+    container_name: threads-autopost-n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    # Semua isi .env diteruskan ke n8n, lalu dibaca workflow lewat $env
+    env_file:
+      - .env
+    environment:
+      # Wajib false supaya workflow boleh membaca $env (default n8n 2.x memblokirnya)
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+      # Dengar di IPv4, supaya tetap jalan di server yang IPv6-nya dimatikan
+      - N8N_LISTEN_ADDRESS=0.0.0.0
+      - TZ=${GENERIC_TIMEZONE:-Asia/Jakarta}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./workflows:/workflows:ro
+      - ./scripts:/scripts:ro
+
+volumes:
+  n8n_data:
