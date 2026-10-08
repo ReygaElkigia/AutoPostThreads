@@ -4,7 +4,7 @@
   "nodes": [
     {
       "parameters": {
-        "content": "## Threads AutoPost — Cerita AI\nWorkflow ini membuat cerita dengan Claude lalu mempostingnya ke Threads sebagai **utas** (bagian 1 = post utama, bagian berikutnya = balasan berantai).\n\n**Jam posting** diatur di node **Jadwal Posting** (cron, default dari `POST_CRON` di `.env`, contoh `0 7,12,19,21 * * *` = jam 07:00, 12:00, 19:00, 21:00).\n**Gaya cerita** diatur lewat `STORY_*` di `.env`; aturan menulis lengkap ada di node **Susun Prompt**.\n**Mode uji**: isi `DRY_RUN=true` di `.env` → cerita hanya dibuat, tidak diposting.\n**Notifikasi Telegram** (opsional): isi `TELEGRAM_BOT_TOKEN` dan `TELEGRAM_CHAT_ID` di `.env`.\n\n3 cara menjalankan:\n1. Otomatis sesuai jadwal (workflow harus di-*Publish*/aktif)\n2. Tombol *Execute workflow* dari **Tes Manual**\n3. `POST /webhook/threads-autopost` dengan header `x-webhook-secret` (lihat README)",
+        "content": "## Threads AutoPost — Cerita AI\nWorkflow ini membuat cerita dengan Claude lalu mempostingnya ke Threads sebagai **utas** (bagian 1 = post utama, bagian berikutnya = balasan berantai).\n\n**Jam posting** diatur di node **Jadwal Posting** (cron, default dari `POST_CRON` di `.env`, contoh `0 7,12,19,21 * * *` = jam 07:00, 12:00, 19:00, 21:00).\n**Gaya cerita** diatur lewat `STORY_*` di `.env`; aturan menulis lengkap ada di node **Susun Prompt**.\n**Mode uji**: isi `DRY_RUN=true` di `.env` → cerita hanya dibuat, tidak diposting.\n**Notifikasi Telegram** (opsional): isi `TELEGRAM_BOT_TOKEN` dan `TELEGRAM_CHAT_ID` di `.env`.\n**Antrian Google Sheets** (opsional): isi `GSHEET_URL` dan `GSHEET_SECRET` di `.env`.\n\n3 cara menjalankan:\n1. Otomatis sesuai jadwal (workflow harus di-*Publish*/aktif)\n2. Tombol *Execute workflow* dari **Tes Manual**\n3. `POST /webhook/threads-autopost` dengan header `x-webhook-secret` (lihat README)",
         "width": 1060,
         "height": 420,
         "color": 7
@@ -165,12 +165,49 @@
     },
     {
       "parameters": {
-        "jsCode": "// Semua pengaturan dibaca dari environment variable (file .env), lihat README.\n// Node ini juga memilih kategori cerita dan jumlah bagian untuk postingan kali ini.\n\nconst env = (key, fallback = '') => {\n  const v = $env[key];\n  return v === undefined || v === null || String(v).trim() === '' ? fallback : String(v).trim();\n};\nconst toInt = (v, fallback) => {\n  const n = parseInt(v, 10);\n  return Number.isFinite(n) ? n : fallback;\n};\nconst toBool = (v) => /^(1|true|yes|ya|y|on)$/i.test(String(v ?? '').trim());\nconst clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));\nconst randInt = (lo, hi) => lo + Math.floor(Math.random() * (hi - lo + 1));\n\nconst fromWebhook = $('Webhook Manual').isExecuted;\nconst fromSchedule = $('Jadwal Posting').isExecuted;\nconst source = fromWebhook ? 'webhook' : fromSchedule ? 'jadwal' : 'manual';\nconst body = fromWebhook ? $input.first().json.body || {} : {};\n\nconst store = $getWorkflowStaticData('global');\nconst history = Array.isArray(store.history) ? store.history : [];\n\nconst dryRun = fromWebhook && body.dry_run !== undefined ? toBool(body.dry_run) : toBool(env('DRY_RUN', 'false'));\n\n// --- Kategori cerita: dari webhook, atau diacak dari STORY_NICHES (tidak sama dengan postingan terakhir)\nconst niches = env(\n  'STORY_NICHES',\n  'cerita horor kos-kosan|kisah lucu di kantor|kisah inspiratif perantau|cerita cinta masa SMA|kisah haru tentang orang tua'\n)\n  .split('|')\n  .map((s) => s.trim())\n  .filter(Boolean);\nlet kategori = String(body.kategori || '').trim();\nif (!kategori) {\n  const last = history.length ? history[history.length - 1].kategori : null;\n  const pool = niches.length > 1 ? niches.filter((n) => n !== last) : niches;\n  kategori = pool[Math.floor(Math.random() * pool.length)];\n}\n\n// --- Jumlah bagian utas\nconst minParts = clamp(toInt(env('STORY_MIN_PARTS'), 3), 1, 10);\nconst maxParts = clamp(toInt(env('STORY_MAX_PARTS'), 6), minParts, 10);\nconst parts = clamp(toInt(body.jumlah_bagian, 0) || randInt(minParts, maxParts), 1, 10);\n\n// --- Token Threads: pakai token hasil refresh otomatis kalau ada, kalau tidak pakai dari .env\nconst envToken = env('THREADS_ACCESS_TOKEN');\nconst fingerprint = (t) => (t ? t.slice(-12) : '');\nif (store.threadsToken && store.envTokenFingerprint !== fingerprint(envToken)) {\n  // Token di .env sudah diganti manual, jadi token lama hasil refresh dibuang\n  delete store.threadsToken;\n  delete store.threadsTokenExpiresAt;\n  delete store.envTokenFingerprint;\n}\nconst threadsToken = store.threadsToken || envToken;\nif (!dryRun && !threadsToken) throw new Error('THREADS_ACCESS_TOKEN belum diisi di file .env');\nif (!env('ANTHROPIC_API_KEY')) throw new Error('ANTHROPIC_API_KEY belum diisi di file .env');\n\nconst threadsHost = env('THREADS_API_HOST', 'https://graph.threads.net').replace(/\\/+$/, '');\nconst jitterMinutes = clamp(toInt(env('POST_JITTER_MINUTES'), 0), 0, 55);\n\nreturn [\n  {\n    json: {\n      source,\n      dryRun,\n      kategori,\n      ide: String(body.ide || '').trim(),\n      parts,\n      style: env(\n        'STORY_STYLE',\n        'Bahasa Indonesia santai sehari-hari pakai aku-kamu, seperti orang curhat di Threads. Kalimat pendek, jujur, dan relate.'\n      ),\n      persona: env('STORY_PERSONA'),\n      extraInstructions: env('STORY_EXTRA_INSTRUCTIONS'),\n      today: $now.setLocale('id').toFormat('cccc, d LLLL yyyy'),\n      recentTitles: history.slice(-15).map((h) => `${h.judul} (${h.kategori})`),\n      numbering: toBool(env('THREAD_NUMBERING', 'true')),\n      topicTagMode: env('THREADS_TOPIC_TAG', 'auto'),\n      claude: {\n        model: env('AI_MODEL', 'claude-opus-5-5'),\n        effort: env('AI_EFFORT', 'medium'),\n        // \"default\" = kalau model menolak, API otomatis mencoba model cadangan. Isi \"off\" untuk mematikan.\n        fallback: /^(off|false|no|0)$/i.test(env('AI_FALLBACK', 'default')) ? '' : 'default',\n      },\n      threadsApi: `${threadsHost}/v1.0`,\n      threadsUserId: env('THREADS_USER_ID', 'me'),\n      threadsToken,\n      tokenSource: store.threadsToken ? 'refresh otomatis' : '.env',\n      publishDelaySeconds: clamp(toInt(env('PUBLISH_DELAY_SECONDS'), 10), 1, 60),\n      // Jeda acak hanya untuk posting terjadwal yang berjalan otomatis, supaya jam posting tidak terlalu kaku\n      jitterSeconds: fromSchedule && $execution.mode === 'production' && jitterMinutes > 0 ? randInt(1, jitterMinutes * 60) : 1,\n      historySize: clamp(toInt(env('HISTORY_SIZE'), 30), 1, 200),\n    },\n  },\n];"
+        "content": "## Antrian Google Sheets (opsional)\nKalau `GSHEET_URL` diisi, cerita diambil dari sheet **Antrian** (kolom `tanggal`, `jam`, `kategori`, `ide`, `jumlah_bagian`, `status`, `judul`, `link`, `catatan`).\n\n`ANTRIAN_MODE=urut`: baris kosong status-nya diposting berurutan, satu per jadwal. Antrian habis → kategori acak (`ANTRIAN_KOSONG=acak`) atau dilewati (`lewati`).\n`ANTRIAN_MODE=terjadwal`: hanya baris yang punya tanggal/jam, diposting saat waktunya tiba.\n\nStatus baris: `diproses` → `terposting` (plus judul & link) atau `gagal` (plus pesan error). Kosongkan status untuk mengulang.",
+        "width": 940,
+        "height": 420,
+        "color": 6
       },
-      "id": "59a7d3b9-c50c-7fd0-13f8-6d0a4323e858",
-      "name": "Siapkan Konfigurasi",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "id": "41f66392-96c9-2fa3-0820-053872ad78dc",
+      "name": "Catatan Antrian",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1040,
+        -480
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "dc83bd8a-a9b5-395a-647e-ba54950ff0fb",
+              "leftValue": "={{ !!String($env.GSHEET_URL || '').trim() }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f512aa54-24cb-7380-d73d-c766c5f712d7",
+      "name": "Pakai Antrian?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
       "position": [
         880,
         200
@@ -178,7 +215,101 @@
     },
     {
       "parameters": {
-        "amount": "={{ $json.jitterSeconds }}",
+        "method": "GET",
+        "url": "={{ $env.GSHEET_URL }}",
+        "sendQuery": true,
+        "specifyQuery": "json",
+        "jsonQuery": "={{ JSON.stringify({ secret: $env.GSHEET_SECRET, action: 'list' }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "6df10f95-c538-d762-483c-83e71cb17484",
+      "name": "Ambil Antrian",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        60
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Semua pengaturan dibaca dari environment variable (file .env), lihat README.\n// Node ini juga memilih cerita berikutnya: dari antrian Google Sheets, dari webhook, atau kategori acak.\n\nconst env = (key, fallback = '') => {\n  const v = $env[key];\n  return v === undefined || v === null || String(v).trim() === '' ? fallback : String(v).trim();\n};\nconst toInt = (v, fallback) => {\n  const n = parseInt(v, 10);\n  return Number.isFinite(n) ? n : fallback;\n};\nconst toBool = (v) => /^(1|true|yes|ya|y|on)$/i.test(String(v ?? '').trim());\nconst clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));\nconst randInt = (lo, hi) => lo + Math.floor(Math.random() * (hi - lo + 1));\n\nconst fromWebhook = $('Webhook Manual').isExecuted;\nconst fromSchedule = $('Jadwal Posting').isExecuted;\nconst source = fromWebhook ? 'webhook' : fromSchedule ? 'jadwal' : 'manual';\nconst body = fromWebhook ? $('Validasi Webhook').first().json.body || {} : {};\n\nconst store = $getWorkflowStaticData('global');\nconst history = Array.isArray(store.history) ? store.history : [];\n\nconst dryRun = fromWebhook && body.dry_run !== undefined ? toBool(body.dry_run) : toBool(env('DRY_RUN', 'false'));\n\n// --- Antrian Google Sheets (kalau GSHEET_URL diisi). Webhook yang menyebut kategori/ide tidak memakai antrian.\n// ANTRIAN_MODE=urut      : baris diposting berurutan, satu per jadwal. tanggal/jam = paling cepat kapan boleh diposting.\n// ANTRIAN_MODE=terjadwal : hanya baris yang punya tanggal/jam, diposting saat waktunya tiba.\nlet antrian = null;\nconst antrianPeringatan = [];\nif ($('Ambil Antrian').isExecuted && !(body.kategori || body.ide)) {\n  const res = $('Ambil Antrian').first().json;\n  if (!res.ok) throw new Error('Antrian Google Sheets gagal dibaca: ' + (res.error || JSON.stringify(res).slice(0, 300)));\n  const mode = env('ANTRIAN_MODE', 'urut').toLowerCase() === 'terjadwal' ? 'terjadwal' : 'urut';\n  const zone = $now.zoneName;\n  const parseFirst = (text, formats, opts) => {\n    for (const f of formats) {\n      const dt = DateTime.fromFormat(text, f, { zone, ...opts });\n      if (dt.isValid) return dt;\n    }\n    return null;\n  };\n  // null = tanpa waktu, undefined = format tidak dikenali\n  const parseWaktu = (tanggal, jam) => {\n    tanggal = String(tanggal ?? '').trim();\n    jam = String(jam ?? '').trim().toUpperCase();\n    if (!tanggal && !jam) return null;\n    let waktu = $now.startOf('day');\n    if (tanggal) {\n      waktu = parseFirst(tanggal, ['yyyy-MM-dd', 'd/M/yyyy', 'd-M-yyyy', 'd/M/yy', 'yyyy-MM-dd HH:mm']);\n      if (!waktu) return undefined;\n    }\n    if (jam) {\n      const t = parseFirst(jam, ['H:mm', 'H.mm', 'H:mm:ss', 'H.mm.ss', 'h:mm a', 'h:mm:ss a', 'h.mm a'], { locale: 'en' });\n      if (!t) return undefined;\n      waktu = waktu.set({ hour: t.hour, minute: t.minute, second: 0, millisecond: 0 });\n    }\n    return waktu;\n  };\n\n  const kandidat = [];\n  for (const r of res.rows || []) {\n    if (String(r.status ?? '').trim()) continue;\n    if (!String(r.kategori ?? '').trim() && !String(r.ide ?? '').trim()) continue;\n    const waktu = parseWaktu(r.tanggal, r.jam);\n    if (waktu === undefined) {\n      antrianPeringatan.push(`Baris ${r.row}: format tanggal/jam tidak dikenali (\"${r.tanggal}\" \"${r.jam}\")`);\n      continue;\n    }\n    if (mode === 'terjadwal' && !waktu) continue;\n    if (waktu && waktu > $now) continue;\n    kandidat.push({ ...r, waktu });\n  }\n  if (mode === 'terjadwal') kandidat.sort((a, b) => a.waktu - b.waktu);\n\n  const pick = kandidat[0];\n  if (pick) {\n    antrian = {\n      row: pick.row,\n      kategori: String(pick.kategori ?? '').trim(),\n      ide: String(pick.ide ?? '').trim(),\n      jumlah_bagian: toInt(pick.jumlah_bagian, 0),\n      waktu: pick.waktu ? pick.waktu.toFormat('yyyy-MM-dd HH:mm') : null,\n    };\n  } else if (fromSchedule && (mode === 'terjadwal' || env('ANTRIAN_KOSONG', 'acak').toLowerCase() === 'lewati')) {\n    // Tidak ada baris yang waktunya tiba: jadwal kali ini dilewati\n    return [];\n  }\n}\nconst pilihan = antrian || body;\n\n// --- Kategori cerita: dari antrian/webhook, atau diacak dari STORY_NICHES (tidak sama dengan postingan terakhir)\nconst niches = env(\n  'STORY_NICHES',\n  'cerita horor kos-kosan|kisah lucu di kantor|kisah inspiratif perantau|cerita cinta masa SMA|kisah haru tentang orang tua'\n)\n  .split('|')\n  .map((s) => s.trim())\n  .filter(Boolean);\nconst ide = String(pilihan.ide || '').trim();\nlet kategori = String(pilihan.kategori || '').trim();\nif (!kategori && ide) kategori = 'bebas, sesuaikan dengan ide cerita';\nif (!kategori) {\n  const last = history.length ? history[history.length - 1].kategori : null;\n  const pool = niches.length > 1 ? niches.filter((n) => n !== last) : niches;\n  kategori = pool[Math.floor(Math.random() * pool.length)];\n}\n\n// --- Jumlah bagian utas\nconst minParts = clamp(toInt(env('STORY_MIN_PARTS'), 3), 1, 10);\nconst maxParts = clamp(toInt(env('STORY_MAX_PARTS'), 6), minParts, 10);\nconst parts = clamp(toInt(pilihan.jumlah_bagian, 0) || randInt(minParts, maxParts), 1, 10);\n\n// --- Token Threads: pakai token hasil refresh otomatis kalau ada, kalau tidak pakai dari .env\nconst envToken = env('THREADS_ACCESS_TOKEN');\nconst fingerprint = (t) => (t ? t.slice(-12) : '');\nif (store.threadsToken && store.envTokenFingerprint !== fingerprint(envToken)) {\n  // Token di .env sudah diganti manual, jadi token lama hasil refresh dibuang\n  delete store.threadsToken;\n  delete store.threadsTokenExpiresAt;\n  delete store.envTokenFingerprint;\n}\nconst threadsToken = store.threadsToken || envToken;\nif (!dryRun && !threadsToken) throw new Error('THREADS_ACCESS_TOKEN belum diisi di file .env');\nif (!env('ANTHROPIC_API_KEY')) throw new Error('ANTHROPIC_API_KEY belum diisi di file .env');\n\nconst threadsHost = env('THREADS_API_HOST', 'https://graph.threads.net').replace(/\\/+$/, '');\nconst jitterMinutes = clamp(toInt(env('POST_JITTER_MINUTES'), 0), 0, 55);\n\nreturn [\n  {\n    json: {\n      source,\n      dryRun,\n      kategori,\n      ide,\n      parts,\n      antrian,\n      antrianPeringatan,\n      executionId: $execution.id,\n      style: env(\n        'STORY_STYLE',\n        'Bahasa Indonesia santai sehari-hari pakai aku-kamu, seperti orang curhat di Threads. Kalimat pendek, jujur, dan relate.'\n      ),\n      persona: env('STORY_PERSONA'),\n      extraInstructions: env('STORY_EXTRA_INSTRUCTIONS'),\n      today: $now.setLocale('id').toFormat('cccc, d LLLL yyyy'),\n      recentTitles: history.slice(-15).map((h) => `${h.judul} (${h.kategori})`),\n      numbering: toBool(env('THREAD_NUMBERING', 'true')),\n      topicTagMode: env('THREADS_TOPIC_TAG', 'auto'),\n      claude: {\n        model: env('AI_MODEL', 'claude-opus-5-5'),\n        effort: env('AI_EFFORT', 'medium'),\n        // \"default\" = kalau model menolak, API otomatis mencoba model cadangan. Isi \"off\" untuk mematikan.\n        fallback: /^(off|false|no|0)$/i.test(env('AI_FALLBACK', 'default')) ? '' : 'default',\n      },\n      threadsApi: `${threadsHost}/v1.0`,\n      threadsUserId: env('THREADS_USER_ID', 'me'),\n      threadsToken,\n      tokenSource: store.threadsToken ? 'refresh otomatis' : '.env',\n      publishDelaySeconds: clamp(toInt(env('PUBLISH_DELAY_SECONDS'), 10), 1, 60),\n      // Jeda acak hanya untuk posting terjadwal yang berjalan otomatis, supaya jam posting tidak terlalu kaku\n      jitterSeconds: fromSchedule && $execution.mode === 'production' && jitterMinutes > 0 ? randInt(1, jitterMinutes * 60) : 1,\n      historySize: clamp(toInt(env('HISTORY_SIZE'), 30), 1, 200),\n    },\n  },\n];"
+      },
+      "id": "59a7d3b9-c50c-7fd0-13f8-6d0a4323e858",
+      "name": "Siapkan Konfigurasi",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "fc9f2028-f46f-2925-923a-1c4015b0ed31",
+              "leftValue": "={{ !!$json.antrian && !$json.dryRun }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2382de8a-ac9a-00f3-3b95-a15ca5e86eb8",
+      "name": "Klaim Antrian?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1540,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.GSHEET_URL }}",
+        "sendQuery": true,
+        "specifyQuery": "json",
+        "jsonQuery": "={{ JSON.stringify({ secret: $env.GSHEET_SECRET, action: 'update', row: $json.antrian.row, status: 'diproses', catatan: 'diproses oleh eksekusi #' + $json.executionId + ' (' + $now.toFormat('yyyy-MM-dd HH:mm') + ')' }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "0724bc08-3507-e56a-8969-07ca729840b5",
+      "name": "Tandai Diproses",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1760,
+        60
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "amount": "={{ $('Siapkan Konfigurasi').first().json.jitterSeconds }}",
         "unit": "seconds"
       },
       "id": "0d689e77-f8a0-2fed-2d2f-c76f4c4955a3",
@@ -186,7 +317,7 @@
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
       "position": [
-        1100,
+        1980,
         200
       ],
       "webhookId": "9d529bd1-b098-8a27-da29-75481b7adc92"
@@ -200,7 +331,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1320,
+        2200,
         200
       ]
     },
@@ -223,7 +354,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1540,
+        2420,
         200
       ],
       "retryOnFail": true,
@@ -239,7 +370,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1760,
+        2640,
         200
       ]
     },
@@ -273,20 +404,20 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        1980,
+        2860,
         200
       ]
     },
     {
       "parameters": {
-        "jsCode": "// Mode uji (DRY_RUN): cerita hanya ditampilkan di sini, tidak diposting ke Threads.\nconst posts = $input.all().map((i) => i.json);\n\nreturn [\n  {\n    json: {\n      ok: true,\n      dry_run: true,\n      pesan: 'Mode uji: cerita TIDAK diposting ke Threads.',\n      judul: posts[0].judul,\n      kategori: posts[0].kategori,\n      topic_tag: posts[0].topic_tag,\n      jumlah_bagian: posts.length,\n      bagian: posts.map((p) => p.text),\n      panjang_karakter: posts.map((p) => p.panjang),\n    },\n  },\n];"
+        "jsCode": "// Mode uji (DRY_RUN): cerita hanya ditampilkan di sini, tidak diposting ke Threads.\n// Kalau cerita diambil dari antrian Google Sheets, status barisnya tidak diubah.\nconst cfg = $('Siapkan Konfigurasi').first().json;\nconst posts = $input.all().map((i) => i.json);\n\nreturn [\n  {\n    json: {\n      ok: true,\n      dry_run: true,\n      pesan: 'Mode uji: cerita TIDAK diposting ke Threads.',\n      judul: posts[0].judul,\n      kategori: posts[0].kategori,\n      antrian_baris: cfg.antrian ? cfg.antrian.row : null,\n      antrian_peringatan: cfg.antrianPeringatan,\n      topic_tag: posts[0].topic_tag,\n      jumlah_bagian: posts.length,\n      bagian: posts.map((p) => p.text),\n      panjang_karakter: posts.map((p) => p.panjang),\n    },\n  },\n];"
       },
       "id": "7bef44ca-ed0f-4250-2436-399c3de9f7d5",
       "name": "Pratinjau (Dry Run)",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2200,
+        3080,
         40
       ]
     },
@@ -300,7 +431,7 @@
       "type": "n8n-nodes-base.splitInBatches",
       "typeVersion": 3,
       "position": [
-        2200,
+        3080,
         300
       ]
     },
@@ -318,7 +449,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        2420,
+        3300,
         420
       ],
       "retryOnFail": true,
@@ -335,7 +466,7 @@
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
       "position": [
-        2640,
+        3520,
         420
       ],
       "webhookId": "d8b8895e-40b9-870c-36b0-e05bac0ccef2"
@@ -354,7 +485,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        2860,
+        3740,
         420
       ],
       "retryOnFail": true,
@@ -375,7 +506,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        2420,
+        3300,
         200
       ],
       "executeOnce": true,
@@ -383,14 +514,14 @@
     },
     {
       "parameters": {
-        "jsCode": "// Simpan riwayat cerita (supaya ide tidak berulang) dan tampilkan ringkasan hasil posting.\nconst cfg = $('Siapkan Konfigurasi').first().json;\nconst posts = $('Olah Cerita').all().map((i) => i.json);\nconst postIds = posts.map((_, run) => $('Publish Bagian').first(0, run)?.json?.id).filter(Boolean);\nconst permalink = $input.first().json.permalink || null;\n\nconst store = $getWorkflowStaticData('global');\nconst history = Array.isArray(store.history) ? store.history : [];\nhistory.push({\n  judul: posts[0].judul,\n  kategori: posts[0].kategori,\n  waktu: $now.toISO(),\n  post_id: postIds[0] || null,\n  permalink,\n});\nstore.history = history.slice(-cfg.historySize);\n\nreturn [\n  {\n    json: {\n      ok: true,\n      pesan: `Utas ${postIds.length} bagian berhasil diposting.`,\n      sumber: cfg.source,\n      judul: posts[0].judul,\n      kategori: posts[0].kategori,\n      topic_tag: posts[0].topic_tag,\n      permalink,\n      post_ids: postIds,\n      token_dari: cfg.tokenSource,\n      token_kedaluwarsa: store.threadsTokenExpiresAt || 'tidak diketahui (token dari .env)',\n    },\n  },\n];"
+        "jsCode": "// Simpan riwayat cerita (supaya ide tidak berulang) dan tampilkan ringkasan hasil posting.\nconst cfg = $('Siapkan Konfigurasi').first().json;\nconst posts = $('Olah Cerita').all().map((i) => i.json);\nconst postIds = posts.map((_, run) => $('Publish Bagian').first(0, run)?.json?.id).filter(Boolean);\nconst permalink = $input.first().json.permalink || null;\n\nconst store = $getWorkflowStaticData('global');\nconst history = Array.isArray(store.history) ? store.history : [];\nhistory.push({\n  judul: posts[0].judul,\n  kategori: posts[0].kategori,\n  waktu: $now.toISO(),\n  post_id: postIds[0] || null,\n  permalink,\n});\nstore.history = history.slice(-cfg.historySize);\n\nreturn [\n  {\n    json: {\n      ok: true,\n      pesan: `Utas ${postIds.length} bagian berhasil diposting.`,\n      sumber: cfg.source,\n      antrian_baris: cfg.antrian ? cfg.antrian.row : null,\n      judul: posts[0].judul,\n      kategori: posts[0].kategori,\n      topic_tag: posts[0].topic_tag,\n      permalink,\n      post_ids: postIds,\n      token_dari: cfg.tokenSource,\n      token_kedaluwarsa: store.threadsTokenExpiresAt || 'tidak diketahui (token dari .env)',\n    },\n  },\n];"
       },
       "id": "55a27198-3bac-839e-6914-784d8eb09e3c",
       "name": "Ringkasan & Riwayat",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2640,
+        3520,
         200
       ]
     },
@@ -463,9 +594,9 @@
     },
     {
       "parameters": {
-        "content": "## Notifikasi Telegram (opsional)\nIsi `TELEGRAM_BOT_TOKEN` dan `TELEGRAM_CHAT_ID` di `.env` untuk menerima kabar: utas terposting (dengan link), cerita mode uji, token diperpanjang, dan **error** dari node mana pun.\n\n`TELEGRAM_NOTIFY=error` → hanya error. Kosongkan token → notifikasi mati.\n\nNode **Kalau Error** otomatis jalan setiap kali workflow ini gagal.",
+        "content": "## Notifikasi Telegram & catat hasil ke antrian\nIsi `TELEGRAM_BOT_TOKEN` dan `TELEGRAM_CHAT_ID` di `.env` untuk menerima kabar: utas terposting (dengan link), cerita mode uji, token diperpanjang, dan **error** dari node mana pun.\n\n`TELEGRAM_NOTIFY=error` → hanya error. Kosongkan token → notifikasi mati.\n\nNode **Kalau Error** otomatis jalan setiap kali workflow ini gagal.\n\n**Susun Update Antrian** menulis status `terposting`/`gagal` ke Google Sheets (kalau cerita berasal dari antrian).",
         "width": 820,
-        "height": 420,
+        "height": 600,
         "color": 4
       },
       "id": "dba6fe2c-8b31-0f4e-da7a-410d0e46f480",
@@ -490,7 +621,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Susun pesan notifikasi Telegram. Kalau Telegram belum diatur di .env, node ini tidak mengeluarkan apa-apa\n// sehingga node \"Kirim Telegram\" tidak dijalankan.\n// TELEGRAM_NOTIFY: \"semua\" (default) = posting, mode uji, perpanjang token, dan error; \"error\" = error saja; \"off\" = mati.\nconst token = String($env.TELEGRAM_BOT_TOKEN || '').trim();\nconst chatId = String($env.TELEGRAM_CHAT_ID || '').trim();\nconst mode = String($env.TELEGRAM_NOTIFY || 'semua').trim().toLowerCase();\nif (!token || !chatId || /^(off|false|no|0)$/.test(mode)) return [];\n\nconst d = $input.first().json;\nconst MAX = 3900; // batas Telegram 4096 karakter per pesan\nconst cut = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);\nconst tanggal = (iso) => (iso ? DateTime.fromISO(iso, { setZone: true }).setLocale('id').toFormat('d LLLL yyyy, HH:mm') : '-');\n\nlet messages = [];\n\nif ($('Kalau Error').isExecuted) {\n  const err = d.execution?.error || d.trigger?.error || {};\n  messages.push(\n    [\n      '❌ Threads AutoPost gagal',\n      '',\n      `Node: ${d.execution?.lastNodeExecuted || err.node?.name || '-'}`,\n      `Error: ${cut(String(err.message || 'tidak diketahui'), 500)}`,\n      err.description ? `Detail: ${cut(String(err.description), 800)}` : null,\n      d.execution?.url ? `\\nLihat di n8n: ${d.execution.url}` : null,\n    ]\n      .filter((l) => l !== null)\n      .join('\\n')\n  );\n} else if (mode === 'error') {\n  return [];\n} else if ($('Ringkasan & Riwayat').isExecuted) {\n  messages.push(\n    [\n      '✅ Utas baru terposting',\n      '',\n      `Judul: ${d.judul}`,\n      `Kategori: ${d.kategori}`,\n      `Bagian: ${d.post_ids.length}${d.topic_tag ? ` · Topik: ${d.topic_tag}` : ''}`,\n      '',\n      d.permalink || 'Link belum tersedia, cek langsung di Threads.',\n    ].join('\\n')\n  );\n} else if ($('Pratinjau (Dry Run)').isExecuted) {\n  // Kirim cerita lengkap supaya bisa dibaca dari HP. Kalau kepanjangan, dipecah jadi beberapa pesan.\n  const header = [\n    '🧪 Mode uji — cerita TIDAK diposting',\n    `Judul: ${d.judul}`,\n    `Kategori: ${d.kategori}${d.topic_tag ? ` · Topik: ${d.topic_tag}` : ''}`,\n  ].join('\\n');\n  let cur = header;\n  for (const part of d.bagian) {\n    const block = `\\n\\n———\\n\\n${part}`;\n    if (cur.length + block.length > MAX) {\n      messages.push(cur);\n      cur = part;\n    } else {\n      cur += block;\n    }\n  }\n  messages.push(cur);\n} else if ($('Simpan Token Baru').isExecuted) {\n  messages.push(`🔑 Token Threads berhasil diperpanjang.\\nBerlaku sampai: ${tanggal(d.berlaku_sampai)}`);\n}\n\nreturn messages.map((text) => ({ json: { text } }));"
+        "jsCode": "// Susun pesan notifikasi Telegram. Kalau Telegram belum diatur di .env, node ini tidak mengeluarkan apa-apa\n// sehingga node \"Kirim Telegram\" tidak dijalankan.\n// TELEGRAM_NOTIFY: \"semua\" (default) = posting, mode uji, perpanjang token, dan error; \"error\" = error saja; \"off\" = mati.\nconst token = String($env.TELEGRAM_BOT_TOKEN || '').trim();\nconst chatId = String($env.TELEGRAM_CHAT_ID || '').trim();\nconst mode = String($env.TELEGRAM_NOTIFY || 'semua').trim().toLowerCase();\nif (!token || !chatId || /^(off|false|no|0)$/.test(mode)) return [];\n\nconst d = $input.first().json;\nconst MAX = 3900; // batas Telegram 4096 karakter per pesan\nconst cut = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);\nconst tanggal = (iso) => (iso ? DateTime.fromISO(iso, { setZone: true }).setLocale('id').toFormat('d LLLL yyyy, HH:mm') : '-');\n\nlet messages = [];\n\nif ($('Kalau Error').isExecuted) {\n  const err = d.execution?.error || d.trigger?.error || {};\n  messages.push(\n    [\n      '❌ Threads AutoPost gagal',\n      '',\n      `Node: ${d.execution?.lastNodeExecuted || err.node?.name || '-'}`,\n      `Error: ${cut(String(err.message || 'tidak diketahui'), 500)}`,\n      err.description ? `Detail: ${cut(String(err.description), 800)}` : null,\n      d.execution?.url ? `\\nLihat di n8n: ${d.execution.url}` : null,\n    ]\n      .filter((l) => l !== null)\n      .join('\\n')\n  );\n} else if (mode === 'error') {\n  return [];\n} else if ($('Ringkasan & Riwayat').isExecuted) {\n  messages.push(\n    [\n      '✅ Utas baru terposting',\n      '',\n      `Judul: ${d.judul}`,\n      `Kategori: ${d.kategori}`,\n      `Bagian: ${d.post_ids.length}${d.topic_tag ? ` · Topik: ${d.topic_tag}` : ''}`,\n      d.antrian_baris ? `Dari antrian Google Sheets baris ${d.antrian_baris}` : null,\n      '',\n      d.permalink || 'Link belum tersedia, cek langsung di Threads.',\n    ]\n      .filter((l) => l !== null)\n      .join('\\n')\n  );\n} else if ($('Pratinjau (Dry Run)').isExecuted) {\n  // Kirim cerita lengkap supaya bisa dibaca dari HP. Kalau kepanjangan, dipecah jadi beberapa pesan.\n  const header = [\n    '🧪 Mode uji — cerita TIDAK diposting',\n    `Judul: ${d.judul}`,\n    `Kategori: ${d.kategori}${d.topic_tag ? ` · Topik: ${d.topic_tag}` : ''}`,\n    d.antrian_baris ? `Dari antrian baris ${d.antrian_baris} (status baris tidak diubah)` : null,\n    ...(d.antrian_peringatan || []).map((w) => `⚠️ ${w}`),\n  ]\n    .filter((l) => l !== null)\n    .join('\\n');\n  let cur = header;\n  for (const part of d.bagian) {\n    const block = `\\n\\n———\\n\\n${part}`;\n    if (cur.length + block.length > MAX) {\n      messages.push(cur);\n      cur = part;\n    } else {\n      cur += block;\n    }\n  }\n  messages.push(cur);\n} else if ($('Simpan Token Baru').isExecuted) {\n  messages.push(`🔑 Token Threads berhasil diperpanjang.\\nBerlaku sampai: ${tanggal(d.berlaku_sampai)}`);\n}\n\nreturn messages.map((text) => ({ json: { text } }));"
       },
       "id": "1b015032-c6ee-2158-6fe3-c91f9060fd1c",
       "name": "Susun Pesan Telegram",
@@ -500,6 +631,43 @@
         1400,
         900
       ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Tulis hasil ke baris antrian Google Sheets: \"terposting\" (dengan judul & link) atau \"gagal\" (dengan pesan error).\n// Kalau GSHEET_URL kosong, atau cerita ini tidak berasal dari antrian, node ini tidak mengeluarkan apa-apa.\nif (!String($env.GSHEET_URL || '').trim()) return [];\nconst waktu = $now.toFormat('yyyy-MM-dd HH:mm');\nconst d = $input.first().json;\n\nif ($('Kalau Error').isExecuted) {\n  // Baris yang sedang \"diproses\" oleh eksekusi yang gagal dicari lewat nomor eksekusinya\n  if (!d.execution?.id) return [];\n  const err = d.execution.error || {};\n  const pesan = [d.execution.lastNodeExecuted, err.description || err.message].filter(Boolean).join(': ');\n  return [{ json: { query: { action: 'update', exec: String(d.execution.id), status: 'gagal', catatan: `gagal ${waktu} — ${pesan}`.slice(0, 500) } } }];\n}\n\nconst cfg = $('Siapkan Konfigurasi').first().json;\nif (!cfg.antrian) return [];\nreturn [\n  {\n    json: {\n      query: {\n        action: 'update',\n        row: String(cfg.antrian.row),\n        status: 'terposting',\n        judul: d.judul,\n        link: d.permalink || '',\n        catatan: `diposting ${waktu}`,\n      },\n    },\n  },\n];"
+      },
+      "id": "629e94e3-cc74-6780-8bbb-314743ac6bd2",
+      "name": "Susun Update Antrian",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        1100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.GSHEET_URL }}",
+        "sendQuery": true,
+        "specifyQuery": "json",
+        "jsonQuery": "={{ JSON.stringify(Object.assign({ secret: $env.GSHEET_SECRET }, $json.query)) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "9c5ac14a-810f-e1ce-227b-ed9b635bf72f",
+      "name": "Update Antrian",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1640,
+        1100
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -536,7 +704,7 @@
       "main": [
         [
           {
-            "node": "Siapkan Konfigurasi",
+            "node": "Pakai Antrian?",
             "type": "main",
             "index": 0
           }
@@ -547,7 +715,7 @@
       "main": [
         [
           {
-            "node": "Siapkan Konfigurasi",
+            "node": "Pakai Antrian?",
             "type": "main",
             "index": 0
           }
@@ -598,6 +766,35 @@
       "main": [
         [
           {
+            "node": "Pakai Antrian?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pakai Antrian?": {
+      "main": [
+        [
+          {
+            "node": "Ambil Antrian",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Siapkan Konfigurasi",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ambil Antrian": {
+      "main": [
+        [
+          {
             "node": "Siapkan Konfigurasi",
             "type": "main",
             "index": 0
@@ -606,6 +803,35 @@
       ]
     },
     "Siapkan Konfigurasi": {
+      "main": [
+        [
+          {
+            "node": "Klaim Antrian?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Klaim Antrian?": {
+      "main": [
+        [
+          {
+            "node": "Tandai Diproses",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Jeda Acak",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tandai Diproses": {
       "main": [
         [
           {
@@ -780,6 +1006,11 @@
             "node": "Susun Pesan Telegram",
             "type": "main",
             "index": 0
+          },
+          {
+            "node": "Susun Update Antrian",
+            "type": "main",
+            "index": 0
           }
         ]
       ]
@@ -813,6 +1044,11 @@
             "node": "Susun Pesan Telegram",
             "type": "main",
             "index": 0
+          },
+          {
+            "node": "Susun Update Antrian",
+            "type": "main",
+            "index": 0
           }
         ]
       ]
@@ -822,6 +1058,17 @@
         [
           {
             "node": "Kirim Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Susun Update Antrian": {
+      "main": [
+        [
+          {
+            "node": "Update Antrian",
             "type": "main",
             "index": 0
           }

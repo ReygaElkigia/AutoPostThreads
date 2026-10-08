@@ -17,6 +17,7 @@ Fitur lain:
 - **Webhook** untuk posting kapan saja dengan topik atau ide cerita tertentu.
 - **Token Threads diperpanjang otomatis** setiap minggu (token berlaku 60 hari).
 - Topik Threads (*topic tag*) dipilih AI atau ditentukan sendiri.
+- **Antrian Google Sheets** (opsional): tulis sendiri ide cerita (dan tanggal/jam posting) di Google Sheets; workflow mengambilnya satu per satu dan menulis status serta link post ke sheet.
 - **Notifikasi Telegram** (opsional): kabar setiap utas terposting (dengan link), cerita mode uji untuk dibaca dari HP, dan peringatan kalau ada error.
 
 ## Cara kerja
@@ -25,12 +26,14 @@ Fitur lain:
 flowchart LR
   A["Jadwal Posting<br/>(cron POST_CRON)"] --> C
   B["Webhook / Tes Manual"] --> C
-  C["Siapkan Konfigurasi<br/>pilih kategori & jumlah bagian"] --> D["Jeda Acak"]
+  S["Antrian Google Sheets<br/>(opsional)"] -.->|"ide berikutnya"| C
+  C["Siapkan Konfigurasi<br/>pilih ide, kategori & jumlah bagian"] --> D["Jeda Acak"]
   D --> E["Claude<br/>menulis cerita"]
   E --> F["Olah Cerita<br/>pecah jadi post ≤ 500 karakter"]
   F -->|"DRY_RUN=true"| G["Pratinjau saja"]
   F -->|"DRY_RUN=false"| H["Posting ke Threads<br/>bagian 1 = post utama<br/>bagian 2..n = balasan berantai"]
   H --> I["Simpan riwayat"]
+  I -.->|"status & link"| S
   J["Setiap Minggu 03:17"] --> K["Perpanjang token Threads"]
   G --> T["Notifikasi Telegram<br/>(opsional)"]
   I --> T
@@ -192,6 +195,54 @@ Semua field di body opsional:
 
 Webhook langsung membalas `202` lalu bekerja di belakang. Hasilnya bisa dilihat di menu **Executions**. Bisa juga dipanggil dari aplikasi lain (Telegram bot, Google Sheets, shortcut HP, dsb.).
 
+## Antrian dari Google Sheets (opsional)
+
+Kalau ingin menentukan sendiri cerita apa yang diposting (dan kapan), tulis idenya di Google Sheets. Workflow mengambil baris berikutnya, membuat ceritanya, memposting, lalu menulis hasilnya kembali ke sheet.
+
+Contoh isi sheet **Antrian**:
+
+| tanggal | jam | kategori | ide | jumlah_bagian | status | judul | link | catatan |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| | | kisah lucu di kantor | salah kirim chat curhat ke grup kantor | 4 | terposting | Curhat nyasar ke grup kantor | https://www.threads.com/... | diposting 2026-10-08 19:03 |
+| | | | naik ojol nyasar ke kota sebelah | | | | | |
+| 2026-10-10 | 19:00 | cerita horor kos-kosan | | 5 | | | | |
+
+| Kolom | Isi |
+| --- | --- |
+| `tanggal`, `jam` | Opsional. Format tanggal `2026-10-10` atau `10/10/2026`; jam `19:00`, `19.00`, atau `7:00 PM`. Mengikuti zona waktu `GENERIC_TIMEZONE`. |
+| `kategori`, `ide` | Isi minimal salah satu. Kalau cuma `ide`, AI menyesuaikan kategorinya sendiri. |
+| `jumlah_bagian` | Opsional. Kosong = acak antara `STORY_MIN_PARTS` dan `STORY_MAX_PARTS`. |
+| `status` | Kosong = masih antre. Diisi otomatis: `diproses` → `terposting` atau `gagal`. Tulis apa saja (misalnya `tunda`) untuk melewati baris; kosongkan lagi untuk mengulang baris yang gagal. |
+| `judul`, `link`, `catatan` | Diisi otomatis setelah posting (atau pesan error kalau gagal). |
+
+Kolom lain boleh ditambahkan sesukamu; workflow tidak pernah mengubahnya.
+
+### Dua mode antrian
+
+| `ANTRIAN_MODE` | Cara kerja | `POST_CRON` yang cocok |
+| --- | --- | --- |
+| `urut` (default) | Setiap jam posting mengambil **satu baris teratas** yang statusnya kosong. Kalau `tanggal`/`jam` diisi, baris itu baru boleh diambil setelah waktunya lewat. | Jadwal biasa, misalnya `0 7,12,19,21 * * *` |
+| `terjadwal` | Hanya baris yang punya `tanggal`/`jam`. Setiap baris diposting begitu waktunya tiba; baris tanpa waktu diabaikan. Kalau n8n sempat mati, baris yang terlewat diposting satu per satu mulai dari yang paling lama. | Sering, misalnya `*/10 * * * *` (posting telat paling lama 10 menit), dengan `POST_JITTER_MINUTES=0` |
+
+Di mode `urut`, kalau antrian habis, `ANTRIAN_KOSONG=acak` (default) membuat AI memilih kategori sendiri dari `STORY_NICHES`. Isi `lewati` supaya tidak posting apa-apa sampai antrian diisi lagi.
+
+Mode uji (`DRY_RUN`) memakai baris berikutnya untuk pratinjau tanpa mengubah statusnya. Webhook tanpa `kategori`/`ide` juga mengambil dari antrian, sedangkan webhook dengan `kategori`/`ide` tidak menyentuh antrian.
+
+### Memasang antrian (sekali saja)
+
+Tidak perlu akun Google Cloud. Penghubungnya adalah script kecil di dalam spreadsheet kamu sendiri ([`google-sheets/antrian.gs`](google-sheets/antrian.gs)).
+
+1. Buat Google Sheets baru, lalu buka **Ekstensi → Apps Script**.
+2. Hapus isi `Code.gs`, lalu tempel seluruh isi [`google-sheets/antrian.gs`](google-sheets/antrian.gs).
+3. Ganti `GANTI-DENGAN-TEKS-ACAK` di baris `const SECRET = ...` dengan teks acak yang panjang, lalu simpan (Ctrl+S). Isi teks yang sama ke `GSHEET_SECRET` di `.env`.
+4. Di toolbar Apps Script, pilih fungsi **siapkanSheet**, lalu klik **Jalankan**. Google akan meminta izin: pilih akunmu → **Lanjutan** → **Buka ... (tidak aman)** → **Izinkan**. Peringatan ini muncul karena script buatanmu sendiri belum diverifikasi Google. Script ini hanya bisa mengakses spreadsheet ini. Setelah selesai, sheet **Antrian** lengkap dengan contoh muncul.
+5. Klik **Terapkan → Deployment baru**, pilih jenis **Aplikasi web**, lalu atur **Jalankan sebagai: Saya** dan **Yang memiliki akses: Siapa saja**. Klik **Terapkan**, lalu salin **URL aplikasi web** (berakhiran `/exec`) ke `GSHEET_URL` di `.env`.
+6. Jalankan `docker compose up -d`.
+
+Cek koneksinya dengan membuka `GSHEET_URL?secret=SECRET_KAMU&action=list` di browser. Kalau muncul teks berawalan `{"ok":true`, antrian sudah tersambung. Setelah itu jalankan **Tes Manual** dengan `DRY_RUN=true`: pratinjaunya akan menyebut "dari antrian baris ...".
+
+Siapa pun yang tahu URL **dan** secret bisa membaca antrianmu, jadi simpan keduanya baik-baik. Kalau suatu saat isi script diubah, terapkan ulang lewat **Terapkan → Kelola deployment → ✏️ → Versi: Versi baru → Terapkan**. URL-nya tetap sama.
+
 ## Notifikasi Telegram (opsional)
 
 Supaya tidak perlu membuka n8n setiap hari, workflow bisa mengirim kabar ke Telegram:
@@ -250,9 +301,11 @@ Perubahan yang kamu buat sendiri di editor n8n akan tertimpa, jadi catat dulu ka
 ├── .env.example                # Template pengaturan (salin jadi .env)
 ├── workflows/
 │   └── threads-autopost.json   # Workflow n8n yang di-import
-└── scripts/
-    ├── threads-token.js        # Alat bantu cek / tukar / refresh token Threads
-    └── telegram.js             # Alat bantu cari chat ID dan kirim pesan uji Telegram
+├── scripts/
+│   ├── threads-token.js        # Alat bantu cek / tukar / refresh token Threads
+│   └── telegram.js             # Alat bantu cari chat ID dan kirim pesan uji Telegram
+└── google-sheets/
+    └── antrian.gs              # Apps Script untuk antrian Google Sheets
 ```
 
 ## Masalah yang sering muncul
@@ -267,6 +320,11 @@ Perubahan yang kamu buat sendiri di editor n8n akan tertimpa, jadi catat dulu ka
 | Claude error 400 saat memakai model lama | Kosongkan `AI_EFFORT` dan isi `AI_FALLBACK=off`. |
 | Tidak ada posting di jam yang ditentukan | Pastikan workflow sudah di-**Publish**, `DRY_RUN=false`, dan n8n/komputer menyala. Cek menu **Executions**. |
 | Webhook membalas `401` | Header `x-webhook-secret` tidak sama dengan `WEBHOOK_SECRET` di `.env`. |
+| `Antrian Google Sheets gagal dibaca: Secret salah ...` | `SECRET` di Apps Script tidak sama dengan `GSHEET_SECRET` di `.env`. |
+| `... Sheet "Antrian" tidak ditemukan` | Jalankan fungsi `siapkanSheet`, atau ganti nama tab sheet jadi `Antrian`. |
+| Antrian error dengan isi HTML atau kode 401/403 dari Google | Deployment belum diatur **Yang memiliki akses: Siapa saja**, atau `GSHEET_URL` bukan URL yang berakhiran `/exec`. |
+| Baris antrian tidak pernah diambil | `status` harus kosong dan minimal `kategori` atau `ide` terisi. Cek format `tanggal`/`jam`: baris dengan format yang tidak dikenali dilewati dan disebut di pratinjau mode uji. Di mode `terjadwal`, baris wajib punya tanggal/jam. |
+| Baris macet di status `diproses` | n8n mati di tengah proses. Kosongkan status baris itu supaya diambil lagi. |
 | Notifikasi Telegram tidak masuk | Jalankan `docker compose exec n8n node /scripts/telegram.js tes` untuk melihat pesan error-nya. Pastikan sudah mengirim `/start` ke bot. |
 
 ## Catatan
