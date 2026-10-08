@@ -1,0 +1,5 @@
+# Dipakai oleh docker-compose.https.yml. Domain diambil dari N8N_DOMAIN di .env,
+# sertifikat HTTPS dibuat dan diperpanjang otomatis oleh Caddy.
+{$N8N_DOMAIN} {
+	reverse_proxy n8n:5678
+}
