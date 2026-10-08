@@ -89,7 +89,7 @@ docker --version
 
 ```bash
 cd /opt
-git clone -b claude/busy-franklin-uffnoq https://github.com/ReygaElkigia/AutoPostThreads.git
+git clone https://github.com/ReygaElkigia/AutoPostThreads.git
 cd AutoPostThreads
 ```
 
