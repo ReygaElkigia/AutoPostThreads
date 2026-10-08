@@ -77,7 +77,7 @@ Masuk ke [platform.claude.com](https://platform.claude.com), isi saldo/billing, 
 ## Langkah 3 — Isi file `.env`
 
 ```bash
-git clone <url-repo-ini> AutoPostThreads
+git clone https://github.com/ReygaElkigia/AutoPostThreads.git
 cd AutoPostThreads
 cp .env.example .env
 ```
