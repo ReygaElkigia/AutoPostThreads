@@ -13,7 +13,7 @@
 
 const SECRET = 'GANTI-DENGAN-TEKS-ACAK';
 const SHEET_NAME = 'Antrian';
-const HEADERS = ['tanggal', 'jam', 'kategori', 'ide', 'jumlah_bagian', 'status', 'judul', 'link', 'catatan'];
+const HEADERS = ['tanggal', 'jam', 'kategori', 'ide', 'jumlah_bagian', 'gambar', 'status', 'judul', 'link', 'catatan'];
 // Kolom yang boleh diisi oleh n8n. Kolom lain tidak pernah diubah.
 const WRITABLE = ['status', 'judul', 'link', 'catatan'];
 
@@ -90,8 +90,8 @@ function siapkanSheet() {
   if (sheet.getLastRow() === 0) {
     sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]).setFontWeight('bold');
     sheet.getRange(2, 1, 2, HEADERS.length).setValues([
-      ['', '', 'kisah lucu di kantor', 'salah kirim chat curhat ke grup kantor', 4, '', '', '', ''],
-      ['', '', 'cerita horor kos-kosan', '', '', '', '', '', ''],
+      ['', '', 'kisah lucu di kantor', 'salah kirim chat curhat ke grup kantor', 4, '', '', '', '', ''],
+      ['', '', 'cerita horor kos-kosan', '', '', '', '', '', '', ''],
     ]);
     sheet.setFrozenRows(1);
     sheet.getRange('A2:A').setNumberFormat('yyyy-mm-dd');

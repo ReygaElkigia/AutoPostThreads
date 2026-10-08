@@ -4,7 +4,7 @@
   "nodes": [
     {
       "parameters": {
-        "content": "## Threads AutoPost — Cerita AI\nWorkflow ini membuat cerita dengan Claude lalu mempostingnya ke Threads sebagai **utas** (bagian 1 = post utama, bagian berikutnya = balasan berantai).\n\n**Jam posting** diatur di node **Jadwal Posting** (cron, default dari `POST_CRON` di `.env`, contoh `0 7,12,19,21 * * *` = jam 07:00, 12:00, 19:00, 21:00).\n**Gaya cerita** diatur lewat `STORY_*` di `.env`; aturan menulis lengkap ada di node **Susun Prompt**.\n**Mode uji**: isi `DRY_RUN=true` di `.env` → cerita hanya dibuat, tidak diposting.\n**Notifikasi Telegram** (opsional): isi `TELEGRAM_BOT_TOKEN` dan `TELEGRAM_CHAT_ID` di `.env`.\n**Antrian Google Sheets** (opsional): isi `GSHEET_URL` dan `GSHEET_SECRET` di `.env`.\n\n3 cara menjalankan:\n1. Otomatis sesuai jadwal (workflow harus di-*Publish*/aktif)\n2. Tombol *Execute workflow* dari **Tes Manual**\n3. `POST /webhook/threads-autopost` dengan header `x-webhook-secret` (lihat README)",
+        "content": "## Threads AutoPost — Cerita AI\nWorkflow ini membuat cerita dengan Claude lalu mempostingnya ke Threads sebagai **utas** (bagian 1 = post utama, bagian berikutnya = balasan berantai).\n\n**Jam posting** diatur di node **Jadwal Posting** (cron, default dari `POST_CRON` di `.env`, contoh `0 7,12,19,21 * * *` = jam 07:00, 12:00, 19:00, 21:00).\n**Gaya cerita** diatur lewat `STORY_*` di `.env`; aturan menulis lengkap ada di node **Susun Prompt**.\n**Mode uji**: isi `DRY_RUN=true` di `.env` → cerita hanya dibuat, tidak diposting.\n**Notifikasi Telegram** (opsional): isi `TELEGRAM_BOT_TOKEN` dan `TELEGRAM_CHAT_ID` di `.env`.\n**Antrian Google Sheets** (opsional): isi `GSHEET_URL` dan `GSHEET_SECRET` di `.env`.\n**Gambar di post pertama** (opsional): isi `GAMBAR_SUMBER` (`pexels`, `ai`, atau `url`) di `.env`.\n\n3 cara menjalankan:\n1. Otomatis sesuai jadwal (workflow harus di-*Publish*/aktif)\n2. Tombol *Execute workflow* dari **Tes Manual**\n3. `POST /webhook/threads-autopost` dengan header `x-webhook-secret` (lihat README)",
         "width": 1060,
         "height": 420,
         "color": 7
@@ -239,7 +239,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Semua pengaturan dibaca dari environment variable (file .env), lihat README.\n// Node ini juga memilih cerita berikutnya: dari antrian Google Sheets, dari webhook, atau kategori acak.\n\nconst env = (key, fallback = '') => {\n  const v = $env[key];\n  return v === undefined || v === null || String(v).trim() === '' ? fallback : String(v).trim();\n};\nconst toInt = (v, fallback) => {\n  const n = parseInt(v, 10);\n  return Number.isFinite(n) ? n : fallback;\n};\nconst toBool = (v) => /^(1|true|yes|ya|y|on)$/i.test(String(v ?? '').trim());\nconst clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));\nconst randInt = (lo, hi) => lo + Math.floor(Math.random() * (hi - lo + 1));\n\nconst fromWebhook = $('Webhook Manual').isExecuted;\nconst fromSchedule = $('Jadwal Posting').isExecuted;\nconst source = fromWebhook ? 'webhook' : fromSchedule ? 'jadwal' : 'manual';\nconst body = fromWebhook ? $('Validasi Webhook').first().json.body || {} : {};\n\nconst store = $getWorkflowStaticData('global');\nconst history = Array.isArray(store.history) ? store.history : [];\n\nconst dryRun = fromWebhook && body.dry_run !== undefined ? toBool(body.dry_run) : toBool(env('DRY_RUN', 'false'));\n\n// --- Antrian Google Sheets (kalau GSHEET_URL diisi). Webhook yang menyebut kategori/ide tidak memakai antrian.\n// ANTRIAN_MODE=urut      : baris diposting berurutan, satu per jadwal. tanggal/jam = paling cepat kapan boleh diposting.\n// ANTRIAN_MODE=terjadwal : hanya baris yang punya tanggal/jam, diposting saat waktunya tiba.\nlet antrian = null;\nconst antrianPeringatan = [];\nif ($('Ambil Antrian').isExecuted && !(body.kategori || body.ide)) {\n  const res = $('Ambil Antrian').first().json;\n  if (!res.ok) throw new Error('Antrian Google Sheets gagal dibaca: ' + (res.error || JSON.stringify(res).slice(0, 300)));\n  const mode = env('ANTRIAN_MODE', 'urut').toLowerCase() === 'terjadwal' ? 'terjadwal' : 'urut';\n  const zone = $now.zoneName;\n  const parseFirst = (text, formats, opts) => {\n    for (const f of formats) {\n      const dt = DateTime.fromFormat(text, f, { zone, ...opts });\n      if (dt.isValid) return dt;\n    }\n    return null;\n  };\n  // null = tanpa waktu, undefined = format tidak dikenali\n  const parseWaktu = (tanggal, jam) => {\n    tanggal = String(tanggal ?? '').trim();\n    jam = String(jam ?? '').trim().toUpperCase();\n    if (!tanggal && !jam) return null;\n    let waktu = $now.startOf('day');\n    if (tanggal) {\n      waktu = parseFirst(tanggal, ['yyyy-MM-dd', 'd/M/yyyy', 'd-M-yyyy', 'd/M/yy', 'yyyy-MM-dd HH:mm']);\n      if (!waktu) return undefined;\n    }\n    if (jam) {\n      const t = parseFirst(jam, ['H:mm', 'H.mm', 'H:mm:ss', 'H.mm.ss', 'h:mm a', 'h:mm:ss a', 'h.mm a'], { locale: 'en' });\n      if (!t) return undefined;\n      waktu = waktu.set({ hour: t.hour, minute: t.minute, second: 0, millisecond: 0 });\n    }\n    return waktu;\n  };\n\n  const kandidat = [];\n  for (const r of res.rows || []) {\n    if (String(r.status ?? '').trim()) continue;\n    if (!String(r.kategori ?? '').trim() && !String(r.ide ?? '').trim()) continue;\n    const waktu = parseWaktu(r.tanggal, r.jam);\n    if (waktu === undefined) {\n      antrianPeringatan.push(`Baris ${r.row}: format tanggal/jam tidak dikenali (\"${r.tanggal}\" \"${r.jam}\")`);\n      continue;\n    }\n    if (mode === 'terjadwal' && !waktu) continue;\n    if (waktu && waktu > $now) continue;\n    kandidat.push({ ...r, waktu });\n  }\n  if (mode === 'terjadwal') kandidat.sort((a, b) => a.waktu - b.waktu);\n\n  const pick = kandidat[0];\n  if (pick) {\n    antrian = {\n      row: pick.row,\n      kategori: String(pick.kategori ?? '').trim(),\n      ide: String(pick.ide ?? '').trim(),\n      jumlah_bagian: toInt(pick.jumlah_bagian, 0),\n      waktu: pick.waktu ? pick.waktu.toFormat('yyyy-MM-dd HH:mm') : null,\n    };\n  } else if (fromSchedule && (mode === 'terjadwal' || env('ANTRIAN_KOSONG', 'acak').toLowerCase() === 'lewati')) {\n    // Tidak ada baris yang waktunya tiba: jadwal kali ini dilewati\n    return [];\n  }\n}\nconst pilihan = antrian || body;\n\n// --- Kategori cerita: dari antrian/webhook, atau diacak dari STORY_NICHES (tidak sama dengan postingan terakhir)\nconst niches = env(\n  'STORY_NICHES',\n  'cerita horor kos-kosan|kisah lucu di kantor|kisah inspiratif perantau|cerita cinta masa SMA|kisah haru tentang orang tua'\n)\n  .split('|')\n  .map((s) => s.trim())\n  .filter(Boolean);\nconst ide = String(pilihan.ide || '').trim();\nlet kategori = String(pilihan.kategori || '').trim();\nif (!kategori && ide) kategori = 'bebas, sesuaikan dengan ide cerita';\nif (!kategori) {\n  const last = history.length ? history[history.length - 1].kategori : null;\n  const pool = niches.length > 1 ? niches.filter((n) => n !== last) : niches;\n  kategori = pool[Math.floor(Math.random() * pool.length)];\n}\n\n// --- Jumlah bagian utas\nconst minParts = clamp(toInt(env('STORY_MIN_PARTS'), 3), 1, 10);\nconst maxParts = clamp(toInt(env('STORY_MAX_PARTS'), 6), minParts, 10);\nconst parts = clamp(toInt(pilihan.jumlah_bagian, 0) || randInt(minParts, maxParts), 1, 10);\n\n// --- Token Threads: pakai token hasil refresh otomatis kalau ada, kalau tidak pakai dari .env\nconst envToken = env('THREADS_ACCESS_TOKEN');\nconst fingerprint = (t) => (t ? t.slice(-12) : '');\nif (store.threadsToken && store.envTokenFingerprint !== fingerprint(envToken)) {\n  // Token di .env sudah diganti manual, jadi token lama hasil refresh dibuang\n  delete store.threadsToken;\n  delete store.threadsTokenExpiresAt;\n  delete store.envTokenFingerprint;\n}\nconst threadsToken = store.threadsToken || envToken;\nif (!dryRun && !threadsToken) throw new Error('THREADS_ACCESS_TOKEN belum diisi di file .env');\nif (!env('ANTHROPIC_API_KEY')) throw new Error('ANTHROPIC_API_KEY belum diisi di file .env');\n\nconst threadsHost = env('THREADS_API_HOST', 'https://graph.threads.net').replace(/\\/+$/, '');\nconst jitterMinutes = clamp(toInt(env('POST_JITTER_MINUTES'), 0), 0, 55);\n\nreturn [\n  {\n    json: {\n      source,\n      dryRun,\n      kategori,\n      ide,\n      parts,\n      antrian,\n      antrianPeringatan,\n      executionId: $execution.id,\n      style: env(\n        'STORY_STYLE',\n        'Bahasa Indonesia santai sehari-hari pakai aku-kamu, seperti orang curhat di Threads. Kalimat pendek, jujur, dan relate.'\n      ),\n      persona: env('STORY_PERSONA'),\n      extraInstructions: env('STORY_EXTRA_INSTRUCTIONS'),\n      today: $now.setLocale('id').toFormat('cccc, d LLLL yyyy'),\n      recentTitles: history.slice(-15).map((h) => `${h.judul} (${h.kategori})`),\n      numbering: toBool(env('THREAD_NUMBERING', 'true')),\n      topicTagMode: env('THREADS_TOPIC_TAG', 'auto'),\n      claude: {\n        model: env('AI_MODEL', 'claude-opus-5-5'),\n        effort: env('AI_EFFORT', 'medium'),\n        // \"default\" = kalau model menolak, API otomatis mencoba model cadangan. Isi \"off\" untuk mematikan.\n        fallback: /^(off|false|no|0)$/i.test(env('AI_FALLBACK', 'default')) ? '' : 'default',\n      },\n      threadsApi: `${threadsHost}/v1.0`,\n      threadsUserId: env('THREADS_USER_ID', 'me'),\n      threadsToken,\n      tokenSource: store.threadsToken ? 'refresh otomatis' : '.env',\n      publishDelaySeconds: clamp(toInt(env('PUBLISH_DELAY_SECONDS'), 10), 1, 60),\n      // Jeda acak hanya untuk posting terjadwal yang berjalan otomatis, supaya jam posting tidak terlalu kaku\n      jitterSeconds: fromSchedule && $execution.mode === 'production' && jitterMinutes > 0 ? randInt(1, jitterMinutes * 60) : 1,\n      historySize: clamp(toInt(env('HISTORY_SIZE'), 30), 1, 200),\n    },\n  },\n];"
+        "jsCode": "// Semua pengaturan dibaca dari environment variable (file .env), lihat README.\n// Node ini juga memilih cerita berikutnya: dari antrian Google Sheets, dari webhook, atau kategori acak.\n\nconst env = (key, fallback = '') => {\n  const v = $env[key];\n  return v === undefined || v === null || String(v).trim() === '' ? fallback : String(v).trim();\n};\nconst toInt = (v, fallback) => {\n  const n = parseInt(v, 10);\n  return Number.isFinite(n) ? n : fallback;\n};\nconst toBool = (v) => /^(1|true|yes|ya|y|on)$/i.test(String(v ?? '').trim());\nconst clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));\nconst randInt = (lo, hi) => lo + Math.floor(Math.random() * (hi - lo + 1));\n\nconst fromWebhook = $('Webhook Manual').isExecuted;\nconst fromSchedule = $('Jadwal Posting').isExecuted;\nconst source = fromWebhook ? 'webhook' : fromSchedule ? 'jadwal' : 'manual';\nconst body = fromWebhook ? $('Validasi Webhook').first().json.body || {} : {};\n\nconst store = $getWorkflowStaticData('global');\nconst history = Array.isArray(store.history) ? store.history : [];\n\nconst dryRun = fromWebhook && body.dry_run !== undefined ? toBool(body.dry_run) : toBool(env('DRY_RUN', 'false'));\n\n// --- Antrian Google Sheets (kalau GSHEET_URL diisi). Webhook yang menyebut kategori/ide tidak memakai antrian.\n// ANTRIAN_MODE=urut      : baris diposting berurutan, satu per jadwal. tanggal/jam = paling cepat kapan boleh diposting.\n// ANTRIAN_MODE=terjadwal : hanya baris yang punya tanggal/jam, diposting saat waktunya tiba.\nlet antrian = null;\nconst antrianPeringatan = [];\nif ($('Ambil Antrian').isExecuted && !(body.kategori || body.ide)) {\n  const res = $('Ambil Antrian').first().json;\n  if (!res.ok) throw new Error('Antrian Google Sheets gagal dibaca: ' + (res.error || JSON.stringify(res).slice(0, 300)));\n  const mode = env('ANTRIAN_MODE', 'urut').toLowerCase() === 'terjadwal' ? 'terjadwal' : 'urut';\n  const zone = $now.zoneName;\n  const parseFirst = (text, formats, opts) => {\n    for (const f of formats) {\n      const dt = DateTime.fromFormat(text, f, { zone, ...opts });\n      if (dt.isValid) return dt;\n    }\n    return null;\n  };\n  // null = tanpa waktu, undefined = format tidak dikenali\n  const parseWaktu = (tanggal, jam) => {\n    tanggal = String(tanggal ?? '').trim();\n    jam = String(jam ?? '').trim().toUpperCase();\n    if (!tanggal && !jam) return null;\n    let waktu = $now.startOf('day');\n    if (tanggal) {\n      waktu = parseFirst(tanggal, ['yyyy-MM-dd', 'd/M/yyyy', 'd-M-yyyy', 'd/M/yy', 'yyyy-MM-dd HH:mm']);\n      if (!waktu) return undefined;\n    }\n    if (jam) {\n      const t = parseFirst(jam, ['H:mm', 'H.mm', 'H:mm:ss', 'H.mm.ss', 'h:mm a', 'h:mm:ss a', 'h.mm a'], { locale: 'en' });\n      if (!t) return undefined;\n      waktu = waktu.set({ hour: t.hour, minute: t.minute, second: 0, millisecond: 0 });\n    }\n    return waktu;\n  };\n\n  const kandidat = [];\n  for (const r of res.rows || []) {\n    if (String(r.status ?? '').trim()) continue;\n    if (!String(r.kategori ?? '').trim() && !String(r.ide ?? '').trim()) continue;\n    const waktu = parseWaktu(r.tanggal, r.jam);\n    if (waktu === undefined) {\n      antrianPeringatan.push(`Baris ${r.row}: format tanggal/jam tidak dikenali (\"${r.tanggal}\" \"${r.jam}\")`);\n      continue;\n    }\n    if (mode === 'terjadwal' && !waktu) continue;\n    if (waktu && waktu > $now) continue;\n    kandidat.push({ ...r, waktu });\n  }\n  if (mode === 'terjadwal') kandidat.sort((a, b) => a.waktu - b.waktu);\n\n  const pick = kandidat[0];\n  if (pick) {\n    antrian = {\n      row: pick.row,\n      kategori: String(pick.kategori ?? '').trim(),\n      ide: String(pick.ide ?? '').trim(),\n      jumlah_bagian: toInt(pick.jumlah_bagian, 0),\n      gambar: String(pick.gambar ?? '').trim(),\n      waktu: pick.waktu ? pick.waktu.toFormat('yyyy-MM-dd HH:mm') : null,\n    };\n  } else if (fromSchedule && (mode === 'terjadwal' || env('ANTRIAN_KOSONG', 'acak').toLowerCase() === 'lewati')) {\n    // Tidak ada baris yang waktunya tiba: jadwal kali ini dilewati\n    return [];\n  }\n}\nconst pilihan = antrian || body;\n\n// --- Kategori cerita: dari antrian/webhook, atau diacak dari STORY_NICHES (tidak sama dengan postingan terakhir)\nconst niches = env(\n  'STORY_NICHES',\n  'cerita horor kos-kosan|kisah lucu di kantor|kisah inspiratif perantau|cerita cinta masa SMA|kisah haru tentang orang tua'\n)\n  .split('|')\n  .map((s) => s.trim())\n  .filter(Boolean);\nconst ide = String(pilihan.ide || '').trim();\nlet kategori = String(pilihan.kategori || '').trim();\nif (!kategori && ide) kategori = 'bebas, sesuaikan dengan ide cerita';\nif (!kategori) {\n  const last = history.length ? history[history.length - 1].kategori : null;\n  const pool = niches.length > 1 ? niches.filter((n) => n !== last) : niches;\n  kategori = pool[Math.floor(Math.random() * pool.length)];\n}\n\n// --- Jumlah bagian utas\nconst minParts = clamp(toInt(env('STORY_MIN_PARTS'), 3), 1, 10);\nconst maxParts = clamp(toInt(env('STORY_MAX_PARTS'), 6), minParts, 10);\nconst parts = clamp(toInt(pilihan.jumlah_bagian, 0) || randInt(minParts, maxParts), 1, 10);\n\n// --- Token Threads: pakai token hasil refresh otomatis kalau ada, kalau tidak pakai dari .env\nconst envToken = env('THREADS_ACCESS_TOKEN');\nconst fingerprint = (t) => (t ? t.slice(-12) : '');\nif (store.threadsToken && store.envTokenFingerprint !== fingerprint(envToken)) {\n  // Token di .env sudah diganti manual, jadi token lama hasil refresh dibuang\n  delete store.threadsToken;\n  delete store.threadsTokenExpiresAt;\n  delete store.envTokenFingerprint;\n}\nconst threadsToken = store.threadsToken || envToken;\nif (!dryRun && !threadsToken) throw new Error('THREADS_ACCESS_TOKEN belum diisi di file .env');\nif (!env('ANTHROPIC_API_KEY')) throw new Error('ANTHROPIC_API_KEY belum diisi di file .env');\n\n// --- Gambar di post pertama\n// GAMBAR_SUMBER: off | pexels (foto stok sesuai cerita) | ai (ilustrasi AI) | url (acak dari GAMBAR_URLS)\n// URL gambar dari kolom \"gambar\" di antrian atau field \"gambar\" di webhook selalu dipakai lebih dulu.\nconst gambarSumber = env('GAMBAR_SUMBER', 'off').toLowerCase();\nif (!['off', 'pexels', 'ai', 'url'].includes(gambarSumber)) {\n  throw new Error(`GAMBAR_SUMBER tidak dikenal: \"${gambarSumber}\". Pilihan: off, pexels, ai, url`);\n}\nif (gambarSumber === 'pexels' && !env('PEXELS_API_KEY')) throw new Error('GAMBAR_SUMBER=pexels butuh PEXELS_API_KEY di .env');\nconst gambar = {\n  sumber: gambarSumber,\n  manual: String(body.gambar || pilihan.gambar || '').trim(),\n  kredit: toBool(env('GAMBAR_KREDIT', 'true')),\n  gaya: env('GAMBAR_GAYA', 'cinematic digital illustration, moody lighting, rich colors'),\n  aiUrl: env(\n    'GAMBAR_AI_URL',\n    'https://image.pollinations.ai/prompt/{prompt}?width=1080&height=1350&seed={seed}&nologo=true&model=flux'\n  ),\n  urls: env('GAMBAR_URLS')\n    .split('|')\n    .map((u) => u.trim())\n    .filter(Boolean),\n  jedaDetik: clamp(toInt(env('GAMBAR_JEDA_DETIK'), 30), 5, 120),\n  terpakai: Array.isArray(store.gambarTerpakai) ? store.gambarTerpakai : [],\n};\nif (gambarSumber === 'url' && gambar.urls.length === 0) throw new Error('GAMBAR_SUMBER=url butuh daftar GAMBAR_URLS di .env');\n\nconst threadsHost = env('THREADS_API_HOST', 'https://graph.threads.net').replace(/\\/+$/, '');\nconst jitterMinutes = clamp(toInt(env('POST_JITTER_MINUTES'), 0), 0, 55);\n\nreturn [\n  {\n    json: {\n      source,\n      dryRun,\n      kategori,\n      ide,\n      parts,\n      antrian,\n      antrianPeringatan,\n      gambar,\n      executionId: $execution.id,\n      style: env(\n        'STORY_STYLE',\n        'Bahasa Indonesia santai sehari-hari pakai aku-kamu, seperti orang curhat di Threads. Kalimat pendek, jujur, dan relate.'\n      ),\n      persona: env('STORY_PERSONA'),\n      extraInstructions: env('STORY_EXTRA_INSTRUCTIONS'),\n      today: $now.setLocale('id').toFormat('cccc, d LLLL yyyy'),\n      recentTitles: history.slice(-15).map((h) => `${h.judul} (${h.kategori})`),\n      numbering: toBool(env('THREAD_NUMBERING', 'true')),\n      topicTagMode: env('THREADS_TOPIC_TAG', 'auto'),\n      claude: {\n        model: env('AI_MODEL', 'claude-opus-5-5'),\n        effort: env('AI_EFFORT', 'medium'),\n        // \"default\" = kalau model menolak, API otomatis mencoba model cadangan. Isi \"off\" untuk mematikan.\n        fallback: /^(off|false|no|0)$/i.test(env('AI_FALLBACK', 'default')) ? '' : 'default',\n      },\n      threadsApi: `${threadsHost}/v1.0`,\n      threadsUserId: env('THREADS_USER_ID', 'me'),\n      threadsToken,\n      tokenSource: store.threadsToken ? 'refresh otomatis' : '.env',\n      publishDelaySeconds: clamp(toInt(env('PUBLISH_DELAY_SECONDS'), 10), 1, 60),\n      // Jeda acak hanya untuk posting terjadwal yang berjalan otomatis, supaya jam posting tidak terlalu kaku\n      jitterSeconds: fromSchedule && $execution.mode === 'production' && jitterMinutes > 0 ? randInt(1, jitterMinutes * 60) : 1,\n      historySize: clamp(toInt(env('HISTORY_SIZE'), 30), 1, 200),\n    },\n  },\n];"
       },
       "id": "59a7d3b9-c50c-7fd0-13f8-6d0a4323e858",
       "name": "Siapkan Konfigurasi",
@@ -324,7 +324,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Prompt untuk Claude. Ubah aturan menulis di sini kalau pengaturan STORY_* di .env belum cukup.\nconst cfg = $('Siapkan Konfigurasi').first().json;\n\nconst system = [\n  'Kamu penulis konten Threads berbahasa Indonesia yang ahli storytelling.',\n  'Tugasmu menulis satu utas (thread) cerita yang membuat orang berhenti scroll dan membaca sampai habis.',\n  '',\n  'Aturan menulis:',\n  '- Bagian pertama adalah hook: pembuka yang bikin penasaran tanpa membocorkan akhir cerita.',\n  '- Setiap bagian maksimal 420 karakter, berisi satu momen, dan diakhiri dengan rasa penasaran supaya pembaca lanjut ke bagian berikutnya.',\n  '- Bagian terakhir berisi penutup yang memuaskan (twist, pelajaran, atau punchline), lalu satu pertanyaan ringan ke pembaca untuk memancing balasan.',\n  '- Kalimat pendek dan enak dibaca di HP. Boleh pakai baris baru di dalam satu bagian.',\n  '- Tanpa hashtag, tanpa format markdown (tanda bintang, heading), dan tanpa penomoran bagian karena nomor ditambahkan otomatis.',\n  '- Emoji secukupnya, paling banyak satu per bagian.',\n  '- Cerita harus orisinal dan masuk akal. Jangan memakai nama asli tokoh publik atau merek, dan hindari SARA, konten dewasa, serta kekerasan eksplisit.',\n  '',\n  'Field \"judul\" berisi ringkasan ide cerita (maksimal 10 kata, tidak ikut diposting).',\n  'Field \"topic_tag\" berisi satu topik Threads yang relevan (1-50 karakter, tanpa tanda #, titik, atau &), misalnya \"Cerita Horor\".',\n  'Field \"bagian\" berisi teks setiap bagian utas secara berurutan.',\n].join('\\n');\n\nconst user = [\n  `Tulis satu utas cerita dengan tepat ${cfg.parts} bagian.`,\n  '',\n  `Kategori: ${cfg.kategori}`,\n  cfg.ide ? `Ide cerita: ${cfg.ide}` : null,\n  `Gaya bahasa: ${cfg.style}`,\n  `Narator: ${cfg.persona || 'orang pertama (\"aku\") yang menceritakan pengalamannya sendiri'}`,\n  cfg.extraInstructions ? `Instruksi tambahan: ${cfg.extraInstructions}` : null,\n  `Hari ini: ${cfg.today}`,\n  '',\n  'Ide yang sudah pernah diposting (buat cerita yang berbeda dari daftar ini):',\n  cfg.recentTitles.length ? cfg.recentTitles.map((t) => `- ${t}`).join('\\n') : '(belum ada)',\n]\n  .filter((line) => line !== null)\n  .join('\\n');\n\nconst schema = {\n  type: 'object',\n  properties: {\n    judul: { type: 'string', description: 'Ringkasan ide cerita, maksimal 10 kata' },\n    topic_tag: { type: 'string', description: 'Satu topik Threads, 1-50 karakter, tanpa #, titik, atau &' },\n    bagian: { type: 'array', items: { type: 'string' }, description: 'Teks setiap bagian utas secara berurutan' },\n  },\n  required: ['judul', 'topic_tag', 'bagian'],\n  additionalProperties: false,\n};\n\nconst body = {\n  model: cfg.claude.model,\n  max_tokens: 16000,\n  system,\n  messages: [{ role: 'user', content: user }],\n  output_config: { format: { type: 'json_schema', schema } },\n};\nif (cfg.claude.effort) body.output_config.effort = cfg.claude.effort;\nif (cfg.claude.fallback) body.fallbacks = cfg.claude.fallback;\n\nconst headers = { 'anthropic-version': '2023-06-01', 'content-type': 'application/json' };\nif (body.fallbacks) headers['anthropic-beta'] = 'server-side-fallback-2026-07-01';\n\nreturn [{ json: { claudeBody: body, claudeHeaders: headers } }];"
+        "jsCode": "// Prompt untuk Claude. Ubah aturan menulis di sini kalau pengaturan STORY_* di .env belum cukup.\nconst cfg = $('Siapkan Konfigurasi').first().json;\n\n// Kalau post pertama diberi gambar, Claude juga diminta menuliskan kata kunci foto atau prompt ilustrasi\nconst butuhGambar = !cfg.gambar.manual && ['pexels', 'ai'].includes(cfg.gambar.sumber);\n\nconst system = [\n  'Kamu penulis konten Threads berbahasa Indonesia yang ahli storytelling.',\n  'Tugasmu menulis satu utas (thread) cerita yang membuat orang berhenti scroll dan membaca sampai habis.',\n  '',\n  'Aturan menulis:',\n  '- Bagian pertama adalah hook: pembuka yang bikin penasaran tanpa membocorkan akhir cerita.',\n  '- Setiap bagian maksimal 420 karakter, berisi satu momen, dan diakhiri dengan rasa penasaran supaya pembaca lanjut ke bagian berikutnya.',\n  '- Bagian terakhir berisi penutup yang memuaskan (twist, pelajaran, atau punchline), lalu satu pertanyaan ringan ke pembaca untuk memancing balasan.',\n  '- Kalimat pendek dan enak dibaca di HP. Boleh pakai baris baru di dalam satu bagian.',\n  '- Tanpa hashtag, tanpa format markdown (tanda bintang, heading), dan tanpa penomoran bagian karena nomor ditambahkan otomatis.',\n  '- Emoji secukupnya, paling banyak satu per bagian.',\n  '- Cerita harus orisinal dan masuk akal. Jangan memakai nama asli tokoh publik atau merek, dan hindari SARA, konten dewasa, serta kekerasan eksplisit.',\n  '',\n  'Field \"judul\" berisi ringkasan ide cerita (maksimal 10 kata, tidak ikut diposting).',\n  'Field \"topic_tag\" berisi satu topik Threads yang relevan (1-50 karakter, tanpa tanda #, titik, atau &), misalnya \"Cerita Horor\".',\n  'Field \"bagian\" berisi teks setiap bagian utas secara berurutan.',\n  butuhGambar && cfg.gambar.sumber === 'pexels'\n    ? 'Field \"gambar\" berisi 2-4 kata kunci bahasa Inggris untuk mencari foto stok yang cocok dengan suasana pembuka cerita (bukan akhir/twist-nya), tanpa nama orang atau merek. Contoh: \"old boarding house night\".'\n    : null,\n  butuhGambar && cfg.gambar.sumber === 'ai'\n    ? 'Field \"gambar\" berisi prompt bahasa Inggris (maksimal 40 kata) untuk ilustrasi yang menggambarkan suasana pembuka cerita (bukan akhir/twist-nya): tempat, objek, waktu, dan pencahayaan. Tanpa tulisan/teks di gambar, tanpa wajah orang sungguhan atau tokoh terkenal, aman untuk semua umur.'\n    : null,\n]\n  .filter((line) => line !== null)\n  .join('\\n');\n\nconst user = [\n  `Tulis satu utas cerita dengan tepat ${cfg.parts} bagian.`,\n  '',\n  `Kategori: ${cfg.kategori}`,\n  cfg.ide ? `Ide cerita: ${cfg.ide}` : null,\n  `Gaya bahasa: ${cfg.style}`,\n  `Narator: ${cfg.persona || 'orang pertama (\"aku\") yang menceritakan pengalamannya sendiri'}`,\n  cfg.extraInstructions ? `Instruksi tambahan: ${cfg.extraInstructions}` : null,\n  `Hari ini: ${cfg.today}`,\n  '',\n  'Ide yang sudah pernah diposting (buat cerita yang berbeda dari daftar ini):',\n  cfg.recentTitles.length ? cfg.recentTitles.map((t) => `- ${t}`).join('\\n') : '(belum ada)',\n]\n  .filter((line) => line !== null)\n  .join('\\n');\n\nconst schema = {\n  type: 'object',\n  properties: {\n    judul: { type: 'string', description: 'Ringkasan ide cerita, maksimal 10 kata' },\n    topic_tag: { type: 'string', description: 'Satu topik Threads, 1-50 karakter, tanpa #, titik, atau &' },\n    bagian: { type: 'array', items: { type: 'string' }, description: 'Teks setiap bagian utas secara berurutan' },\n  },\n  required: ['judul', 'topic_tag', 'bagian'],\n  additionalProperties: false,\n};\nif (butuhGambar) {\n  schema.properties.gambar = {\n    type: 'string',\n    description: cfg.gambar.sumber === 'pexels' ? 'Kata kunci foto stok (bahasa Inggris)' : 'Prompt ilustrasi (bahasa Inggris)',\n  };\n  schema.required.push('gambar');\n}\n\nconst body = {\n  model: cfg.claude.model,\n  max_tokens: 16000,\n  system,\n  messages: [{ role: 'user', content: user }],\n  output_config: { format: { type: 'json_schema', schema } },\n};\nif (cfg.claude.effort) body.output_config.effort = cfg.claude.effort;\nif (cfg.claude.fallback) body.fallbacks = cfg.claude.fallback;\n\nconst headers = { 'anthropic-version': '2023-06-01', 'content-type': 'application/json' };\nif (body.fallbacks) headers['anthropic-beta'] = 'server-side-fallback-2026-07-01';\n\nreturn [{ json: { claudeBody: body, claudeHeaders: headers } }];"
       },
       "id": "576d852b-9df7-89a8-ceed-776c149f0a03",
       "name": "Susun Prompt",
@@ -363,7 +363,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Ubah jawaban Claude jadi daftar postingan siap kirim (batas Threads: 500 karakter per post).\nconst cfg = $('Siapkan Konfigurasi').first().json;\nconst res = $input.first().json;\n\nif (res.stop_reason === 'refusal') {\n  throw new Error('Claude menolak membuat cerita ini (stop_reason: refusal). Coba ganti kategori atau instruksi.');\n}\nif (res.stop_reason === 'max_tokens') {\n  throw new Error('Jawaban Claude terpotong (stop_reason: max_tokens). Kurangi jumlah bagian.');\n}\nconst raw = (res.content || [])\n  .filter((b) => b.type === 'text')\n  .map((b) => b.text)\n  .join('');\nlet story;\ntry {\n  story = JSON.parse(raw);\n} catch (e) {\n  throw new Error('Jawaban Claude bukan JSON yang valid: ' + raw.slice(0, 300));\n}\nif (!Array.isArray(story.bagian) || story.bagian.length === 0) {\n  throw new Error('Claude tidak mengembalikan bagian cerita.');\n}\n\n// Threads menghitung karakter non-ASCII (misalnya emoji) per byte UTF-8, jadi dihitung dengan cara yang sama.\nconst weight = (s) => {\n  let n = 0;\n  for (const ch of s) {\n    const cp = ch.codePointAt(0);\n    n += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;\n  }\n  return n;\n};\n\nconst clean = (s) =>\n  String(s)\n    .replace(/\\r\\n/g, '\\n')\n    .replace(/\\*\\*|__/g, '')\n    .replace(/^\\s*(?:\\(?\\d{1,2}\\s*\\/\\s*\\d{0,2}\\)?|\\d{1,2}[.)])\\s+/, '') // nomor bagian buatan model\n    .replace(/(^|\\s)#[\\p{L}\\p{N}_]+/gu, '$1') // hashtag\n    .replace(/[ \\t]+\\n/g, '\\n')\n    .replace(/[ \\t]{2,}/g, ' ')\n    .replace(/\\n{3,}/g, '\\n\\n')\n    .trim();\n\n// Pecah teks yang kepanjangan per kalimat jadi beberapa post yang panjangnya kira-kira sama\n// (per kata kalau satu kalimat pun masih kepanjangan)\nconst chunk = (text, max) => {\n  if (weight(text) <= max) return [text];\n  const target = Math.ceil(weight(text) / Math.ceil(weight(text) / max));\n  const sentences = text.match(/[^.!?…\\n]*[.!?…]+[\"”’')]*\\s*|[^.!?…\\n]+\\s*|\\n+/g) || [text];\n  const out = [];\n  let cur = '';\n  const flush = () => {\n    if (cur.trim()) out.push(cur.trim());\n    cur = '';\n  };\n  for (const s of sentences) {\n    if (weight(s) > max) {\n      flush();\n      for (const w of s.split(/\\s+/).filter(Boolean)) {\n        const next = cur ? `${cur} ${w}` : w;\n        if (weight(next) <= max) {\n          cur = next;\n          continue;\n        }\n        flush();\n        for (const ch of w) {\n          if (weight(cur + ch) > max) flush();\n          cur += ch;\n        }\n      }\n      continue;\n    }\n    if (weight(cur + s) > max || weight(cur) >= target) flush();\n    cur += s;\n  }\n  flush();\n  return out;\n};\n\nconst LIMIT = 500;\nconst reserve = cfg.numbering ? 10 : 0; // ruang untuk \"\\n\\n(10/10)\"\nconst posts = story.bagian\n  .map(clean)\n  .filter(Boolean)\n  .flatMap((t) => chunk(t, LIMIT - reserve));\nif (posts.length === 0) throw new Error('Semua bagian cerita kosong setelah dibersihkan.');\n\nconst sanitizeTag = (t) =>\n  [...String(t || '').replace(/[#.&]/g, '').replace(/\\s+/g, ' ').trim()].slice(0, 50).join('').trim();\nconst tagMode = cfg.topicTagMode.toLowerCase();\nconst topicTag =\n  tagMode === 'auto' ? sanitizeTag(story.topic_tag) : /^(off|none|false|0)$/.test(tagMode) ? '' : sanitizeTag(cfg.topicTagMode);\n\nreturn posts.map((text, i) => {\n  const finalText = cfg.numbering && posts.length > 1 ? `${text}\\n\\n(${i + 1}/${posts.length})` : text;\n  return {\n    json: {\n      index: i,\n      total: posts.length,\n      text: finalText,\n      panjang: weight(finalText),\n      topic_tag: i === 0 ? topicTag : '',\n      judul: String(story.judul || '').trim(),\n      kategori: cfg.kategori,\n      dryRun: cfg.dryRun,\n    },\n  };\n});"
+        "jsCode": "// Ubah jawaban Claude jadi daftar postingan siap kirim (batas Threads: 500 karakter per post).\nconst cfg = $('Siapkan Konfigurasi').first().json;\nconst res = $input.first().json;\n\nif (res.stop_reason === 'refusal') {\n  throw new Error('Claude menolak membuat cerita ini (stop_reason: refusal). Coba ganti kategori atau instruksi.');\n}\nif (res.stop_reason === 'max_tokens') {\n  throw new Error('Jawaban Claude terpotong (stop_reason: max_tokens). Kurangi jumlah bagian.');\n}\nconst raw = (res.content || [])\n  .filter((b) => b.type === 'text')\n  .map((b) => b.text)\n  .join('');\nlet story;\ntry {\n  story = JSON.parse(raw);\n} catch (e) {\n  throw new Error('Jawaban Claude bukan JSON yang valid: ' + raw.slice(0, 300));\n}\nif (!Array.isArray(story.bagian) || story.bagian.length === 0) {\n  throw new Error('Claude tidak mengembalikan bagian cerita.');\n}\n\n// Threads menghitung karakter non-ASCII (misalnya emoji) per byte UTF-8, jadi dihitung dengan cara yang sama.\nconst weight = (s) => {\n  let n = 0;\n  for (const ch of s) {\n    const cp = ch.codePointAt(0);\n    n += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;\n  }\n  return n;\n};\n\nconst clean = (s) =>\n  String(s)\n    .replace(/\\r\\n/g, '\\n')\n    .replace(/\\*\\*|__/g, '')\n    .replace(/^\\s*(?:\\(?\\d{1,2}\\s*\\/\\s*\\d{0,2}\\)?|\\d{1,2}[.)])\\s+/, '') // nomor bagian buatan model\n    .replace(/(^|\\s)#[\\p{L}\\p{N}_]+/gu, '$1') // hashtag\n    .replace(/[ \\t]+\\n/g, '\\n')\n    .replace(/[ \\t]{2,}/g, ' ')\n    .replace(/\\n{3,}/g, '\\n\\n')\n    .trim();\n\n// Pecah teks yang kepanjangan per kalimat jadi beberapa post yang panjangnya kira-kira sama\n// (per kata kalau satu kalimat pun masih kepanjangan)\nconst chunk = (text, max) => {\n  if (weight(text) <= max) return [text];\n  const target = Math.ceil(weight(text) / Math.ceil(weight(text) / max));\n  const sentences = text.match(/[^.!?…\\n]*[.!?…]+[\"”’')]*\\s*|[^.!?…\\n]+\\s*|\\n+/g) || [text];\n  const out = [];\n  let cur = '';\n  const flush = () => {\n    if (cur.trim()) out.push(cur.trim());\n    cur = '';\n  };\n  for (const s of sentences) {\n    if (weight(s) > max) {\n      flush();\n      for (const w of s.split(/\\s+/).filter(Boolean)) {\n        const next = cur ? `${cur} ${w}` : w;\n        if (weight(next) <= max) {\n          cur = next;\n          continue;\n        }\n        flush();\n        for (const ch of w) {\n          if (weight(cur + ch) > max) flush();\n          cur += ch;\n        }\n      }\n      continue;\n    }\n    if (weight(cur + s) > max || weight(cur) >= target) flush();\n    cur += s;\n  }\n  flush();\n  return out;\n};\n\nconst LIMIT = 500;\nconst reserve = cfg.numbering ? 10 : 0; // ruang untuk \"\\n\\n(10/10)\"\nconst posts = story.bagian\n  .map(clean)\n  .filter(Boolean)\n  .flatMap((t) => chunk(t, LIMIT - reserve));\nif (posts.length === 0) throw new Error('Semua bagian cerita kosong setelah dibersihkan.');\n\nconst sanitizeTag = (t) =>\n  [...String(t || '').replace(/[#.&]/g, '').replace(/\\s+/g, ' ').trim()].slice(0, 50).join('').trim();\nconst tagMode = cfg.topicTagMode.toLowerCase();\nconst topicTag =\n  tagMode === 'auto' ? sanitizeTag(story.topic_tag) : /^(off|none|false|0)$/.test(tagMode) ? '' : sanitizeTag(cfg.topicTagMode);\n\nreturn posts.map((text, i) => {\n  const finalText = cfg.numbering && posts.length > 1 ? `${text}\\n\\n(${i + 1}/${posts.length})` : text;\n  return {\n    json: {\n      index: i,\n      total: posts.length,\n      text: finalText,\n      panjang: weight(finalText),\n      topic_tag: i === 0 ? topicTag : '',\n      judul: String(story.judul || '').trim(),\n      // Kata kunci foto / prompt ilustrasi dari Claude (hanya ada kalau GAMBAR_SUMBER=pexels/ai)\n      gambar_ide: i === 0 ? String(story.gambar || '').trim() : '',\n      kategori: cfg.kategori,\n      dryRun: cfg.dryRun,\n    },\n  };\n});"
       },
       "id": "34db9cee-98b0-da95-0e00-67bd8e2bc7f2",
       "name": "Olah Cerita",
@@ -371,6 +371,183 @@
       "typeVersion": 2,
       "position": [
         2640,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Gambar di post pertama (opsional)\n`GAMBAR_SUMBER=pexels`: foto stok dari Pexels sesuai kata kunci dari Claude (butuh `PEXELS_API_KEY`, gratis).\n`GAMBAR_SUMBER=ai`: ilustrasi AI dari `GAMBAR_AI_URL` (default Pollinations), prompt ditulis Claude.\n`GAMBAR_SUMBER=url`: acak dari daftar `GAMBAR_URLS`.\nKolom `gambar` di antrian / field `gambar` di webhook selalu dipakai lebih dulu.\n\nGambar diunduh dulu untuk dicek (JPEG/PNG, maks 8 MB). Kalau gagal, utas tetap diposting **tanpa gambar** dan alasannya dikirim ke Telegram.",
+        "width": 1360,
+        "height": 420,
+        "color": 3
+      },
+      "id": "ac2a25ea-3bd9-46ce-6d58-9dda09276577",
+      "name": "Catatan Gambar",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2640,
+        -480
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Tentukan gambar untuk post pertama. Gambarnya diunduh dulu untuk dicek sebelum dikirim ke Threads.\nconst cfg = $('Siapkan Konfigurasi').first().json;\nconst g = cfg.gambar;\nconst ide = $input.first().json.gambar_ide || '';\n\nlet plan = { sumber: 'off' };\nif (g.manual) {\n  plan = /^https?:\\/\\//i.test(g.manual)\n    ? { sumber: 'manual', url: g.manual }\n    : { sumber: 'manual', url: '', peringatan: `Isi kolom gambar bukan URL: \"${g.manual.slice(0, 80)}\"` };\n} else if (g.sumber === 'pexels') {\n  plan = { sumber: 'pexels', query: ide || cfg.kategori };\n} else if (g.sumber === 'ai') {\n  const prompt = [ide || `a scene from a story about ${cfg.kategori}`, g.gaya, 'no text, no watermark'].join(', ');\n  const seed = String(Math.floor(Math.random() * 1e9));\n  const url = g.aiUrl.split('{prompt}').join(encodeURIComponent(prompt)).split('{seed}').join(seed);\n  plan = { sumber: 'ai', url, prompt };\n} else if (g.sumber === 'url') {\n  // Utamakan gambar yang belum pernah dipakai\n  const belum = g.urls.filter((u) => !g.terpakai.includes(u));\n  const pool = belum.length ? belum : g.urls;\n  const url = pool[Math.floor(Math.random() * pool.length)];\n  plan = { sumber: 'url', url, id: url };\n}\n\nreturn [{ json: { plan } }];"
+      },
+      "id": "6904d714-f132-5ed7-08eb-8eb9ed13b815",
+      "name": "Rencana Gambar",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2860,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c7f2a217-d346-e091-e783-281732bd95e1",
+              "leftValue": "={{ $json.plan.sumber === 'pexels' && !$json.plan.url }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "56277b96-5331-3251-f63b-1a843f119322",
+      "name": "Cari di Pexels?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3080,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ ($env.PEXELS_API_HOST || 'https://api.pexels.com').replace(/\\/+$/, '') }}/v1/search",
+        "sendQuery": true,
+        "specifyQuery": "json",
+        "jsonQuery": "={{ JSON.stringify({ query: $json.plan.query, orientation: 'portrait', per_page: 15 }) }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ JSON.stringify({ Authorization: $env.PEXELS_API_KEY }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "e21e5aad-7bfc-c826-8925-464a8ed6e539",
+      "name": "Cari Foto Pexels",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3300,
+        60
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pilih satu foto dari hasil pencarian Pexels (utamakan yang belum pernah dipakai), dipotong portrait 1080x1350.\nconst cfg = $('Siapkan Konfigurasi').first().json;\nconst plan = $('Rencana Gambar').first().json.plan;\nconst res = $input.first().json;\n\nif (!Array.isArray(res.photos)) {\n  const alasan = res.error?.message || res.error || JSON.stringify(res).slice(0, 200);\n  return [{ json: { plan: { ...plan, url: '', peringatan: `Pencarian Pexels gagal: ${alasan}` } } }];\n}\nconst terpakai = new Set(cfg.gambar.terpakai.map(String));\nconst baru = res.photos.filter((p) => !terpakai.has(`pexels:${p.id}`));\nconst pool = (baru.length ? baru : res.photos).slice(0, 5);\nif (pool.length === 0) {\n  return [{ json: { plan: { ...plan, url: '', peringatan: `Tidak ada foto Pexels untuk \"${plan.query}\"` } } }];\n}\n\nconst foto = pool[Math.floor(Math.random() * pool.length)];\nconst asli = String(foto.src?.original || '').split('?')[0];\nreturn [\n  {\n    json: {\n      plan: {\n        ...plan,\n        url: `${asli}?auto=compress&cs=tinysrgb&fit=crop&w=1080&h=1350`,\n        id: `pexels:${foto.id}`,\n        fotografer: foto.photographer || '',\n        halaman: foto.url || '',\n      },\n    },\n  },\n];"
+      },
+      "id": "1fbd27ee-af90-aa37-0552-c7e3eb09a067",
+      "name": "Pilih Foto",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3520,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "bfda219d-4fd8-6715-cbd5-4ab1f719f9c0",
+              "leftValue": "={{ !!$json.plan.url }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7e61ba06-cba5-13d2-35d8-c49102be2e03",
+      "name": "Ada URL Gambar?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3740,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.plan.url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          },
+          "timeout": 120000
+        }
+      },
+      "id": "d052ed67-e23c-b298-cdfa-ceeccb8d1a19",
+      "name": "Unduh Gambar",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3960,
+        60
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pasang gambar ke post pertama kalau gambarnya valid (JPEG/PNG, maksimal 8 MB).\n// Kalau gambar gagal didapat, utas tetap diposting tanpa gambar dan alasannya dicatat.\nconst cfg = $('Siapkan Konfigurasi').first().json;\nconst posts = $('Olah Cerita').all().map((i) => ({ ...i.json }));\nconst plan = $('Pilih Foto').isExecuted ? $('Pilih Foto').first().json.plan : $('Rencana Gambar').first().json.plan;\n\nconst weight = (s) => {\n  let n = 0;\n  for (const ch of s) {\n    const cp = ch.codePointAt(0);\n    n += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;\n  }\n  return n;\n};\nconst toBytes = (b) => {\n  if (Number(b.bytes) > 0) return Number(b.bytes);\n  const m = String(b.fileSize || '').match(/([\\d.]+)\\s*(B|kB|KB|MB|GB)/);\n  const unit = { B: 1, kB: 1e3, KB: 1e3, MB: 1e6, GB: 1e9 };\n  return m ? Number(m[1]) * unit[m[2]] : 0;\n};\n\nlet url = '';\nlet peringatan = plan.peringatan || '';\nif (plan.url) {\n  const unduhan = $('Unduh Gambar').isExecuted ? $input.first() : null;\n  const bin = unduhan?.binary?.data;\n  const asal = plan.sumber === 'ai' ? 'Gambar AI' : 'Gambar';\n  if (!bin) {\n    peringatan = `${asal} tidak bisa diunduh: ${String(unduhan?.json?.error?.message || 'tidak ada data').slice(0, 150)}`;\n  } else if (!/^image\\/(jpeg|jpg|png)$/i.test(bin.mimeType || '')) {\n    peringatan = `${asal} berformat ${bin.mimeType || 'tidak dikenal'}, padahal Threads hanya menerima JPEG/PNG`;\n  } else if (toBytes(bin) > 8 * 1024 * 1024) {\n    peringatan = `${asal} lebih dari 8 MB (${bin.fileSize})`;\n  } else {\n    url = plan.url;\n  }\n}\n\nif (url) {\n  posts[0].image_url = url;\n  // Kredit fotografer Pexels, hanya kalau masih muat di batas 500 karakter\n  if (plan.sumber === 'pexels' && cfg.gambar.kredit && plan.fotografer) {\n    const dengan = `${posts[0].text}\\n📷 ${plan.fotografer} / Pexels`;\n    if (weight(dengan) <= 500) {\n      posts[0].text = dengan;\n      posts[0].panjang = weight(dengan);\n    }\n  }\n}\nposts[0].gambar = {\n  sumber: url ? plan.sumber : 'tanpa gambar',\n  url,\n  id: url ? plan.id || '' : '',\n  fotografer: url ? plan.fotografer || '' : '',\n  peringatan,\n};\n\nreturn posts.map((json) => ({ json }));"
+      },
+      "id": "430e4675-a128-0323-d3dc-379a32ebf348",
+      "name": "Hasil Gambar",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4180,
         200
       ]
     },
@@ -404,20 +581,20 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        2860,
+        4400,
         200
       ]
     },
     {
       "parameters": {
-        "jsCode": "// Mode uji (DRY_RUN): cerita hanya ditampilkan di sini, tidak diposting ke Threads.\n// Kalau cerita diambil dari antrian Google Sheets, status barisnya tidak diubah.\nconst cfg = $('Siapkan Konfigurasi').first().json;\nconst posts = $input.all().map((i) => i.json);\n\nreturn [\n  {\n    json: {\n      ok: true,\n      dry_run: true,\n      pesan: 'Mode uji: cerita TIDAK diposting ke Threads.',\n      judul: posts[0].judul,\n      kategori: posts[0].kategori,\n      antrian_baris: cfg.antrian ? cfg.antrian.row : null,\n      antrian_peringatan: cfg.antrianPeringatan,\n      topic_tag: posts[0].topic_tag,\n      jumlah_bagian: posts.length,\n      bagian: posts.map((p) => p.text),\n      panjang_karakter: posts.map((p) => p.panjang),\n    },\n  },\n];"
+        "jsCode": "// Mode uji (DRY_RUN): cerita hanya ditampilkan di sini, tidak diposting ke Threads.\n// Kalau cerita diambil dari antrian Google Sheets, status barisnya tidak diubah.\nconst cfg = $('Siapkan Konfigurasi').first().json;\nconst posts = $input.all().map((i) => i.json);\n\nreturn [\n  {\n    json: {\n      ok: true,\n      dry_run: true,\n      pesan: 'Mode uji: cerita TIDAK diposting ke Threads.',\n      judul: posts[0].judul,\n      kategori: posts[0].kategori,\n      antrian_baris: cfg.antrian ? cfg.antrian.row : null,\n      antrian_peringatan: cfg.antrianPeringatan,\n      topic_tag: posts[0].topic_tag,\n      gambar: posts[0].gambar,\n      jumlah_bagian: posts.length,\n      bagian: posts.map((p) => p.text),\n      panjang_karakter: posts.map((p) => p.panjang),\n    },\n  },\n];"
       },
       "id": "7bef44ca-ed0f-4250-2436-399c3de9f7d5",
       "name": "Pratinjau (Dry Run)",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3080,
+        4620,
         40
       ]
     },
@@ -431,7 +608,7 @@
       "type": "n8n-nodes-base.splitInBatches",
       "typeVersion": 3,
       "position": [
-        3080,
+        4620,
         300
       ]
     },
@@ -441,7 +618,7 @@
         "url": "={{ $('Siapkan Konfigurasi').first().json.threadsApi }}/{{ $('Siapkan Konfigurasi').first().json.threadsUserId }}/threads",
         "sendQuery": true,
         "specifyQuery": "json",
-        "jsonQuery": "={{ JSON.stringify(Object.assign({ media_type: 'TEXT', text: $json.text, access_token: $('Siapkan Konfigurasi').first().json.threadsToken }, $json.topic_tag ? { topic_tag: $json.topic_tag } : {}, $runIndex > 0 ? { reply_to_id: $('Publish Bagian').first(0, $runIndex - 1).json.id } : {})) }}",
+        "jsonQuery": "={{ JSON.stringify(Object.assign({ media_type: $json.image_url ? 'IMAGE' : 'TEXT', text: $json.text, access_token: $('Siapkan Konfigurasi').first().json.threadsToken }, $json.image_url ? { image_url: $json.image_url } : {}, $json.topic_tag ? { topic_tag: $json.topic_tag } : {}, $runIndex > 0 ? { reply_to_id: $('Publish Bagian').first(0, $runIndex - 1).json.id } : {})) }}",
         "options": {}
       },
       "id": "8fb32dad-83c2-3dd2-344a-dd19e17de664",
@@ -449,7 +626,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        3300,
+        4840,
         420
       ],
       "retryOnFail": true,
@@ -458,7 +635,7 @@
     },
     {
       "parameters": {
-        "amount": "={{ $('Siapkan Konfigurasi').first().json.publishDelaySeconds }}",
+        "amount": "={{ $runIndex === 0 && $('Hasil Gambar').first().json.image_url ? $('Siapkan Konfigurasi').first().json.gambar.jedaDetik : $('Siapkan Konfigurasi').first().json.publishDelaySeconds }}",
         "unit": "seconds"
       },
       "id": "a4e11b80-2201-4303-095d-d83c63e776b4",
@@ -466,10 +643,44 @@
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
       "position": [
-        3520,
+        5060,
         420
       ],
       "webhookId": "d8b8895e-40b9-870c-36b0-e05bac0ccef2"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Siapkan Konfigurasi').first().json.threadsApi }}/{{ $json.id }}",
+        "sendQuery": true,
+        "specifyQuery": "json",
+        "jsonQuery": "={{ JSON.stringify({ fields: 'id,status,error_message', access_token: $('Siapkan Konfigurasi').first().json.threadsToken }) }}",
+        "options": {}
+      },
+      "id": "38e0abb4-eb79-8c44-f553-bd581c285b5d",
+      "name": "Cek Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5280,
+        420
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Cek status container sebelum dipublikasikan. Kalau Threads gagal memproses media, berhenti dengan pesan jelas.\n// Status IN_PROGRESS (gambar masih diproses) ditangani oleh percobaan ulang di node Publish Bagian.\nconst res = $input.first().json;\nconst status = String(res.status || '').toUpperCase();\nif (status === 'ERROR' || status === 'EXPIRED') {\n  throw new Error(\n    `Threads gagal memproses post (status ${status}${res.error_message ? `, ${res.error_message}` : ''}). ` +\n      'Kalau ini post bergambar, pastikan URL gambarnya publik dan berformat JPEG/PNG.'\n  );\n}\nreturn [{ json: { id: res.id, status } }];"
+      },
+      "id": "a00fa652-c0b7-75dd-65da-e027228788a5",
+      "name": "Pastikan Siap",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5500,
+        420
+      ]
     },
     {
       "parameters": {
@@ -485,11 +696,11 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        3740,
+        5720,
         420
       ],
       "retryOnFail": true,
-      "maxTries": 3,
+      "maxTries": 5,
       "waitBetweenTries": 5000
     },
     {
@@ -506,7 +717,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        3300,
+        4840,
         200
       ],
       "executeOnce": true,
@@ -514,14 +725,14 @@
     },
     {
       "parameters": {
-        "jsCode": "// Simpan riwayat cerita (supaya ide tidak berulang) dan tampilkan ringkasan hasil posting.\nconst cfg = $('Siapkan Konfigurasi').first().json;\nconst posts = $('Olah Cerita').all().map((i) => i.json);\nconst postIds = posts.map((_, run) => $('Publish Bagian').first(0, run)?.json?.id).filter(Boolean);\nconst permalink = $input.first().json.permalink || null;\n\nconst store = $getWorkflowStaticData('global');\nconst history = Array.isArray(store.history) ? store.history : [];\nhistory.push({\n  judul: posts[0].judul,\n  kategori: posts[0].kategori,\n  waktu: $now.toISO(),\n  post_id: postIds[0] || null,\n  permalink,\n});\nstore.history = history.slice(-cfg.historySize);\n\nreturn [\n  {\n    json: {\n      ok: true,\n      pesan: `Utas ${postIds.length} bagian berhasil diposting.`,\n      sumber: cfg.source,\n      antrian_baris: cfg.antrian ? cfg.antrian.row : null,\n      judul: posts[0].judul,\n      kategori: posts[0].kategori,\n      topic_tag: posts[0].topic_tag,\n      permalink,\n      post_ids: postIds,\n      token_dari: cfg.tokenSource,\n      token_kedaluwarsa: store.threadsTokenExpiresAt || 'tidak diketahui (token dari .env)',\n    },\n  },\n];"
+        "jsCode": "// Simpan riwayat cerita (supaya ide tidak berulang) dan tampilkan ringkasan hasil posting.\nconst cfg = $('Siapkan Konfigurasi').first().json;\nconst posts = $('Hasil Gambar').all().map((i) => i.json);\nconst gambar = posts[0].gambar;\nconst postIds = posts.map((_, run) => $('Publish Bagian').first(0, run)?.json?.id).filter(Boolean);\nconst permalink = $input.first().json.permalink || null;\n\nconst store = $getWorkflowStaticData('global');\nconst history = Array.isArray(store.history) ? store.history : [];\nhistory.push({\n  judul: posts[0].judul,\n  kategori: posts[0].kategori,\n  waktu: $now.toISO(),\n  post_id: postIds[0] || null,\n  permalink,\n});\nstore.history = history.slice(-cfg.historySize);\nif (gambar.id) {\n  // Ingat gambar yang sudah dipakai supaya tidak berulang\n  const terpakai = Array.isArray(store.gambarTerpakai) ? store.gambarTerpakai : [];\n  store.gambarTerpakai = [...terpakai.filter((x) => x !== gambar.id), gambar.id].slice(-100);\n}\n\nreturn [\n  {\n    json: {\n      ok: true,\n      pesan: `Utas ${postIds.length} bagian berhasil diposting.`,\n      sumber: cfg.source,\n      antrian_baris: cfg.antrian ? cfg.antrian.row : null,\n      judul: posts[0].judul,\n      kategori: posts[0].kategori,\n      topic_tag: posts[0].topic_tag,\n      gambar,\n      permalink,\n      post_ids: postIds,\n      token_dari: cfg.tokenSource,\n      token_kedaluwarsa: store.threadsTokenExpiresAt || 'tidak diketahui (token dari .env)',\n    },\n  },\n];"
       },
       "id": "55a27198-3bac-839e-6914-784d8eb09e3c",
       "name": "Ringkasan & Riwayat",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3520,
+        5060,
         200
       ]
     },
@@ -621,7 +832,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Susun pesan notifikasi Telegram. Kalau Telegram belum diatur di .env, node ini tidak mengeluarkan apa-apa\n// sehingga node \"Kirim Telegram\" tidak dijalankan.\n// TELEGRAM_NOTIFY: \"semua\" (default) = posting, mode uji, perpanjang token, dan error; \"error\" = error saja; \"off\" = mati.\nconst token = String($env.TELEGRAM_BOT_TOKEN || '').trim();\nconst chatId = String($env.TELEGRAM_CHAT_ID || '').trim();\nconst mode = String($env.TELEGRAM_NOTIFY || 'semua').trim().toLowerCase();\nif (!token || !chatId || /^(off|false|no|0)$/.test(mode)) return [];\n\nconst d = $input.first().json;\nconst MAX = 3900; // batas Telegram 4096 karakter per pesan\nconst cut = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);\nconst tanggal = (iso) => (iso ? DateTime.fromISO(iso, { setZone: true }).setLocale('id').toFormat('d LLLL yyyy, HH:mm') : '-');\n\nlet messages = [];\n\nif ($('Kalau Error').isExecuted) {\n  const err = d.execution?.error || d.trigger?.error || {};\n  messages.push(\n    [\n      '❌ Threads AutoPost gagal',\n      '',\n      `Node: ${d.execution?.lastNodeExecuted || err.node?.name || '-'}`,\n      `Error: ${cut(String(err.message || 'tidak diketahui'), 500)}`,\n      err.description ? `Detail: ${cut(String(err.description), 800)}` : null,\n      d.execution?.url ? `\\nLihat di n8n: ${d.execution.url}` : null,\n    ]\n      .filter((l) => l !== null)\n      .join('\\n')\n  );\n} else if (mode === 'error') {\n  return [];\n} else if ($('Ringkasan & Riwayat').isExecuted) {\n  messages.push(\n    [\n      '✅ Utas baru terposting',\n      '',\n      `Judul: ${d.judul}`,\n      `Kategori: ${d.kategori}`,\n      `Bagian: ${d.post_ids.length}${d.topic_tag ? ` · Topik: ${d.topic_tag}` : ''}`,\n      d.antrian_baris ? `Dari antrian Google Sheets baris ${d.antrian_baris}` : null,\n      '',\n      d.permalink || 'Link belum tersedia, cek langsung di Threads.',\n    ]\n      .filter((l) => l !== null)\n      .join('\\n')\n  );\n} else if ($('Pratinjau (Dry Run)').isExecuted) {\n  // Kirim cerita lengkap supaya bisa dibaca dari HP. Kalau kepanjangan, dipecah jadi beberapa pesan.\n  const header = [\n    '🧪 Mode uji — cerita TIDAK diposting',\n    `Judul: ${d.judul}`,\n    `Kategori: ${d.kategori}${d.topic_tag ? ` · Topik: ${d.topic_tag}` : ''}`,\n    d.antrian_baris ? `Dari antrian baris ${d.antrian_baris} (status baris tidak diubah)` : null,\n    ...(d.antrian_peringatan || []).map((w) => `⚠️ ${w}`),\n  ]\n    .filter((l) => l !== null)\n    .join('\\n');\n  let cur = header;\n  for (const part of d.bagian) {\n    const block = `\\n\\n———\\n\\n${part}`;\n    if (cur.length + block.length > MAX) {\n      messages.push(cur);\n      cur = part;\n    } else {\n      cur += block;\n    }\n  }\n  messages.push(cur);\n} else if ($('Simpan Token Baru').isExecuted) {\n  messages.push(`🔑 Token Threads berhasil diperpanjang.\\nBerlaku sampai: ${tanggal(d.berlaku_sampai)}`);\n}\n\nreturn messages.map((text) => ({ json: { text } }));"
+        "jsCode": "// Susun pesan notifikasi Telegram. Kalau Telegram belum diatur di .env, node ini tidak mengeluarkan apa-apa\n// sehingga node \"Kirim Telegram\" tidak dijalankan.\n// TELEGRAM_NOTIFY: \"semua\" (default) = posting, mode uji, perpanjang token, dan error; \"error\" = error saja; \"off\" = mati.\nconst token = String($env.TELEGRAM_BOT_TOKEN || '').trim();\nconst chatId = String($env.TELEGRAM_CHAT_ID || '').trim();\nconst mode = String($env.TELEGRAM_NOTIFY || 'semua').trim().toLowerCase();\nif (!token || !chatId || /^(off|false|no|0)$/.test(mode)) return [];\n\nconst d = $input.first().json;\nconst MAX = 3900; // batas Telegram 4096 karakter per pesan\nconst cut = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);\nconst tanggal = (iso) => (iso ? DateTime.fromISO(iso, { setZone: true }).setLocale('id').toFormat('d LLLL yyyy, HH:mm') : '-');\n\n// Info gambar post pertama. Di pesan mode uji, link gambar disertakan supaya Telegram menampilkan pratinjaunya.\nconst gambarInfo = (g, denganLink) => {\n  if (!g) return null;\n  if (g.url) {\n    const asal = g.sumber === 'pexels' && g.fotografer ? `Pexels, ${g.fotografer}` : g.sumber;\n    return denganLink ? `🖼️ Gambar (${asal}): ${g.url}` : `🖼️ Dengan gambar (${asal})`;\n  }\n  return g.peringatan ? `⚠️ Tanpa gambar: ${g.peringatan}` : null;\n};\n\nlet messages = [];\n\nif ($('Kalau Error').isExecuted) {\n  const err = d.execution?.error || d.trigger?.error || {};\n  messages.push(\n    [\n      '❌ Threads AutoPost gagal',\n      '',\n      `Node: ${d.execution?.lastNodeExecuted || err.node?.name || '-'}`,\n      `Error: ${cut(String(err.message || 'tidak diketahui').replace(/\\s*\\[line \\d+\\]$/, ''), 500)}`,\n      err.description ? `Detail: ${cut(String(err.description), 800)}` : null,\n      d.execution?.url ? `\\nLihat di n8n: ${d.execution.url}` : null,\n    ]\n      .filter((l) => l !== null)\n      .join('\\n')\n  );\n} else if (mode === 'error') {\n  return [];\n} else if ($('Ringkasan & Riwayat').isExecuted) {\n  messages.push(\n    [\n      '✅ Utas baru terposting',\n      '',\n      `Judul: ${d.judul}`,\n      `Kategori: ${d.kategori}`,\n      `Bagian: ${d.post_ids.length}${d.topic_tag ? ` · Topik: ${d.topic_tag}` : ''}`,\n      d.antrian_baris ? `Dari antrian Google Sheets baris ${d.antrian_baris}` : null,\n      gambarInfo(d.gambar, false),\n      '',\n      d.permalink || 'Link belum tersedia, cek langsung di Threads.',\n    ]\n      .filter((l) => l !== null)\n      .join('\\n')\n  );\n} else if ($('Pratinjau (Dry Run)').isExecuted) {\n  // Kirim cerita lengkap supaya bisa dibaca dari HP. Kalau kepanjangan, dipecah jadi beberapa pesan.\n  const header = [\n    '🧪 Mode uji — cerita TIDAK diposting',\n    `Judul: ${d.judul}`,\n    `Kategori: ${d.kategori}${d.topic_tag ? ` · Topik: ${d.topic_tag}` : ''}`,\n    d.antrian_baris ? `Dari antrian baris ${d.antrian_baris} (status baris tidak diubah)` : null,\n    ...(d.antrian_peringatan || []).map((w) => `⚠️ ${w}`),\n    gambarInfo(d.gambar, true),\n  ]\n    .filter((l) => l !== null)\n    .join('\\n');\n  let cur = header;\n  for (const part of d.bagian) {\n    const block = `\\n\\n———\\n\\n${part}`;\n    if (cur.length + block.length > MAX) {\n      messages.push(cur);\n      cur = part;\n    } else {\n      cur += block;\n    }\n  }\n  messages.push(cur);\n} else if ($('Simpan Token Baru').isExecuted) {\n  messages.push(`🔑 Token Threads berhasil diperpanjang.\\nBerlaku sampai: ${tanggal(d.berlaku_sampai)}`);\n}\n\nreturn messages.map((text) => ({ json: { text } }));"
       },
       "id": "1b015032-c6ee-2158-6fe3-c91f9060fd1c",
       "name": "Susun Pesan Telegram",
@@ -634,7 +845,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Tulis hasil ke baris antrian Google Sheets: \"terposting\" (dengan judul & link) atau \"gagal\" (dengan pesan error).\n// Kalau GSHEET_URL kosong, atau cerita ini tidak berasal dari antrian, node ini tidak mengeluarkan apa-apa.\nif (!String($env.GSHEET_URL || '').trim()) return [];\nconst waktu = $now.toFormat('yyyy-MM-dd HH:mm');\nconst d = $input.first().json;\n\nif ($('Kalau Error').isExecuted) {\n  // Baris yang sedang \"diproses\" oleh eksekusi yang gagal dicari lewat nomor eksekusinya\n  if (!d.execution?.id) return [];\n  const err = d.execution.error || {};\n  const pesan = [d.execution.lastNodeExecuted, err.description || err.message].filter(Boolean).join(': ');\n  return [{ json: { query: { action: 'update', exec: String(d.execution.id), status: 'gagal', catatan: `gagal ${waktu} — ${pesan}`.slice(0, 500) } } }];\n}\n\nconst cfg = $('Siapkan Konfigurasi').first().json;\nif (!cfg.antrian) return [];\nreturn [\n  {\n    json: {\n      query: {\n        action: 'update',\n        row: String(cfg.antrian.row),\n        status: 'terposting',\n        judul: d.judul,\n        link: d.permalink || '',\n        catatan: `diposting ${waktu}`,\n      },\n    },\n  },\n];"
+        "jsCode": "// Tulis hasil ke baris antrian Google Sheets: \"terposting\" (dengan judul & link) atau \"gagal\" (dengan pesan error).\n// Kalau GSHEET_URL kosong, atau cerita ini tidak berasal dari antrian, node ini tidak mengeluarkan apa-apa.\nif (!String($env.GSHEET_URL || '').trim()) return [];\nconst waktu = $now.toFormat('yyyy-MM-dd HH:mm');\nconst d = $input.first().json;\n\nif ($('Kalau Error').isExecuted) {\n  // Baris yang sedang \"diproses\" oleh eksekusi yang gagal dicari lewat nomor eksekusinya\n  if (!d.execution?.id) return [];\n  const err = d.execution.error || {};\n  const pesan = [d.execution.lastNodeExecuted, err.description || err.message].filter(Boolean).join(': ');\n  return [{ json: { query: { action: 'update', exec: String(d.execution.id), status: 'gagal', catatan: `gagal ${waktu} — ${pesan}`.slice(0, 500) } } }];\n}\n\nconst cfg = $('Siapkan Konfigurasi').first().json;\nif (!cfg.antrian) return [];\nreturn [\n  {\n    json: {\n      query: {\n        action: 'update',\n        row: String(cfg.antrian.row),\n        status: 'terposting',\n        judul: d.judul,\n        link: d.permalink || '',\n        catatan: `diposting ${waktu}${d.gambar?.peringatan ? ` — tanpa gambar: ${d.gambar.peringatan}` : ''}`.slice(0, 500),\n      },\n    },\n  },\n];"
       },
       "id": "629e94e3-cc74-6780-8bbb-314743ac6bd2",
       "name": "Susun Update Antrian",
@@ -879,6 +1090,97 @@
       "main": [
         [
           {
+            "node": "Rencana Gambar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rencana Gambar": {
+      "main": [
+        [
+          {
+            "node": "Cari di Pexels?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cari di Pexels?": {
+      "main": [
+        [
+          {
+            "node": "Cari Foto Pexels",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ada URL Gambar?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cari Foto Pexels": {
+      "main": [
+        [
+          {
+            "node": "Pilih Foto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pilih Foto": {
+      "main": [
+        [
+          {
+            "node": "Ada URL Gambar?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ada URL Gambar?": {
+      "main": [
+        [
+          {
+            "node": "Unduh Gambar",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Hasil Gambar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Unduh Gambar": {
+      "main": [
+        [
+          {
+            "node": "Hasil Gambar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hasil Gambar": {
+      "main": [
+        [
+          {
             "node": "Mode Uji?",
             "type": "main",
             "index": 0
@@ -934,6 +1236,28 @@
       ]
     },
     "Tunggu Proses": {
+      "main": [
+        [
+          {
+            "node": "Cek Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cek Status": {
+      "main": [
+        [
+          {
+            "node": "Pastikan Siap",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pastikan Siap": {
       "main": [
         [
           {

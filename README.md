@@ -17,6 +17,7 @@ Fitur lain:
 - **Webhook** untuk posting kapan saja dengan topik atau ide cerita tertentu.
 - **Token Threads diperpanjang otomatis** setiap minggu (token berlaku 60 hari).
 - Topik Threads (*topic tag*) dipilih AI atau ditentukan sendiri.
+- **Gambar di post pertama** (opsional): foto stok dari Pexels yang cocok dengan cerita, ilustrasi AI, atau gambar milikmu sendiri.
 - **Antrian Google Sheets** (opsional): tulis sendiri ide cerita (dan tanggal/jam posting) di Google Sheets; workflow mengambilnya satu per satu dan menulis status serta link post ke sheet.
 - **Notifikasi Telegram** (opsional): kabar setiap utas terposting (dengan link), cerita mode uji untuk dibaca dari HP, dan peringatan kalau ada error.
 
@@ -30,8 +31,9 @@ flowchart LR
   C["Siapkan Konfigurasi<br/>pilih ide, kategori & jumlah bagian"] --> D["Jeda Acak"]
   D --> E["Claude<br/>menulis cerita"]
   E --> F["Olah Cerita<br/>pecah jadi post ≤ 500 karakter"]
-  F -->|"DRY_RUN=true"| G["Pratinjau saja"]
-  F -->|"DRY_RUN=false"| H["Posting ke Threads<br/>bagian 1 = post utama<br/>bagian 2..n = balasan berantai"]
+  F --> P["Gambar post pertama<br/>(opsional: Pexels / AI / URL)"]
+  P -->|"DRY_RUN=true"| G["Pratinjau saja"]
+  P -->|"DRY_RUN=false"| H["Posting ke Threads<br/>bagian 1 = post utama (+ gambar)<br/>bagian 2..n = balasan berantai"]
   H --> I["Simpan riwayat"]
   I -.->|"status & link"| S
   J["Setiap Minggu 03:17"] --> K["Perpanjang token Threads"]
@@ -192,8 +194,35 @@ Semua field di body opsional:
 | `ide` | Ide cerita spesifik. |
 | `jumlah_bagian` | Jumlah bagian utas (1–10). |
 | `dry_run` | `true` = hanya dibuat, `false` = langsung diposting. Kosong = ikut `DRY_RUN` di `.env`. |
+| `gambar` | URL gambar untuk post pertama. |
 
 Webhook langsung membalas `202` lalu bekerja di belakang. Hasilnya bisa dilihat di menu **Executions**. Bisa juga dipanggil dari aplikasi lain (Telegram bot, Google Sheets, shortcut HP, dsb.).
+
+## Gambar di post pertama (opsional)
+
+Post pertama utas bisa diberi gambar supaya lebih menonjol di feed. Pilih sumbernya lewat `GAMBAR_SUMBER` di `.env`:
+
+| `GAMBAR_SUMBER` | Gambar | Yang perlu disiapkan |
+| --- | --- | --- |
+| `off` (default) | Tanpa gambar | — |
+| `pexels` | Foto stok asli yang cocok dengan suasana cerita. Claude menuliskan kata kuncinya, lalu workflow mencari di Pexels dan memotongnya portrait 1080×1350. | API key gratis dari [pexels.com/api](https://www.pexels.com/api/) → `PEXELS_API_KEY` |
+| `ai` | Ilustrasi buatan AI. Claude menuliskan prompt-nya, gayanya diatur `GAMBAR_GAYA`. | Tidak ada (default memakai [Pollinations](https://pollinations.ai), gratis) |
+| `url` | Acak dari daftar gambar milikmu (`GAMBAR_URLS`, dipisah `\|`), mengutamakan yang belum pernah dipakai. | URL gambar publik |
+
+Gambar per postingan juga bisa ditentukan sendiri, apa pun `GAMBAR_SUMBER`-nya:
+
+- **Antrian Google Sheets:** isi kolom `gambar` dengan URL gambar. Sheet yang dibuat sebelum fitur ini belum punya kolom itu; tambahkan saja kolom berjudul `gambar`.
+- **Webhook:** kirim field `"gambar": "https://..."`.
+
+**Syarat gambar dari Threads:** URL harus bisa dibuka publik tanpa login (link berbagi Google Drive tidak bisa), formatnya JPEG atau PNG, dan ukurannya maksimal 8 MB. Sebelum posting, workflow mengunduh gambarnya dulu untuk mengecek syarat ini.
+
+**Kalau gambar gagal didapat** (Pexels tidak menemukan foto, generator AI sedang down, URL mati, format salah), utas **tetap diposting tanpa gambar**. Alasannya dikirim ke Telegram dan dicatat di kolom `catatan` antrian. Kalau gambar sudah terkirim tetapi ditolak Threads saat diproses, workflow berhenti dengan pesan error yang jelas.
+
+Catatan:
+
+- Foto Pexels gratis dipakai, termasuk untuk komersial. `GAMBAR_KREDIT=true` menambahkan `📷 Nama / Pexels` di post pertama sebagai apresiasi untuk fotografernya, selama masih muat di batas 500 karakter.
+- Pollinations gratis tanpa key, tapi bisa lambat, kadang diberi watermark, dan dibatasi jumlah permintaannya. Kalau punya key Pollinations atau layanan gambar lain yang menghasilkan gambar langsung dari sebuah URL, ganti `GAMBAR_AI_URL` (`{prompt}` dan `{seed}` diganti otomatis).
+- Post bergambar ditunggu `GAMBAR_JEDA_DETIK` (default 30 detik) sebelum dipublikasikan, sesuai saran Meta. Kalau gambarnya masih diproses, workflow mencoba lagi sampai 20 detik.
 
 ## Antrian dari Google Sheets (opsional)
 
@@ -201,17 +230,18 @@ Kalau ingin menentukan sendiri cerita apa yang diposting (dan kapan), tulis iden
 
 Contoh isi sheet **Antrian**:
 
-| tanggal | jam | kategori | ide | jumlah_bagian | status | judul | link | catatan |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| | | kisah lucu di kantor | salah kirim chat curhat ke grup kantor | 4 | terposting | Curhat nyasar ke grup kantor | https://www.threads.com/... | diposting 2026-10-08 19:03 |
-| | | | naik ojol nyasar ke kota sebelah | | | | | |
-| 2026-10-10 | 19:00 | cerita horor kos-kosan | | 5 | | | | |
+| tanggal | jam | kategori | ide | jumlah_bagian | gambar | status | judul | link | catatan |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| | | kisah lucu di kantor | salah kirim chat curhat ke grup kantor | 4 | | terposting | Curhat nyasar ke grup kantor | https://www.threads.com/... | diposting 2026-10-08 19:03 |
+| | | | naik ojol nyasar ke kota sebelah | | https://contoh.com/ojol.jpg | | | | |
+| 2026-10-10 | 19:00 | cerita horor kos-kosan | | 5 | | | | | |
 
 | Kolom | Isi |
 | --- | --- |
 | `tanggal`, `jam` | Opsional. Format tanggal `2026-10-10` atau `10/10/2026`; jam `19:00`, `19.00`, atau `7:00 PM`. Mengikuti zona waktu `GENERIC_TIMEZONE`. |
 | `kategori`, `ide` | Isi minimal salah satu. Kalau cuma `ide`, AI menyesuaikan kategorinya sendiri. |
 | `jumlah_bagian` | Opsional. Kosong = acak antara `STORY_MIN_PARTS` dan `STORY_MAX_PARTS`. |
+| `gambar` | Opsional. URL gambar untuk post pertama (lihat [Gambar di post pertama](#gambar-di-post-pertama-opsional)). |
 | `status` | Kosong = masih antre. Diisi otomatis: `diproses` → `terposting` atau `gagal`. Tulis apa saja (misalnya `tunda`) untuk melewati baris; kosongkan lagi untuk mengulang baris yang gagal. |
 | `judul`, `link`, `catatan` | Diisi otomatis setelah posting (atau pesan error kalau gagal). |
 
@@ -249,8 +279,8 @@ Supaya tidak perlu membuka n8n setiap hari, workflow bisa mengirim kabar ke Tele
 
 | Kejadian | Isi pesan |
 | --- | --- |
-| Utas berhasil diposting | Judul, kategori, jumlah bagian, dan link post |
-| Mode uji (`DRY_RUN`) | Cerita lengkap, jadi bisa dibaca dan dinilai dari HP |
+| Utas berhasil diposting | Judul, kategori, jumlah bagian, link post, dan info gambar (atau alasan kalau tanpa gambar) |
+| Mode uji (`DRY_RUN`) | Cerita lengkap dan link gambarnya, jadi bisa dibaca dan dinilai dari HP |
 | Token diperpanjang (tiap Minggu) | Tanggal token berlaku sampai |
 | **Error** di node mana pun | Nama node, pesan error, dan link ke eksekusi di n8n |
 
@@ -325,6 +355,8 @@ Perubahan yang kamu buat sendiri di editor n8n akan tertimpa, jadi catat dulu ka
 | Antrian error dengan isi HTML atau kode 401/403 dari Google | Deployment belum diatur **Yang memiliki akses: Siapa saja**, atau `GSHEET_URL` bukan URL yang berakhiran `/exec`. |
 | Baris antrian tidak pernah diambil | `status` harus kosong dan minimal `kategori` atau `ide` terisi. Cek format `tanggal`/`jam`: baris dengan format yang tidak dikenali dilewati dan disebut di pratinjau mode uji. Di mode `terjadwal`, baris wajib punya tanggal/jam. |
 | Baris macet di status `diproses` | n8n mati di tengah proses. Kosongkan status baris itu supaya diambil lagi. |
+| Telegram: `Tanpa gambar: ...` | Gambar gagal didapat, jadi utas diposting tanpa gambar. Baca alasannya. Untuk `pexels`, cek `PEXELS_API_KEY`; untuk `ai`, generator mungkin sedang sibuk dan biasanya pulih sendiri. |
+| `Threads gagal memproses post (status ERROR ...)` | Threads tidak bisa mengambil gambarnya. Pastikan URL bisa dibuka publik dan berformat JPEG/PNG. |
 | Notifikasi Telegram tidak masuk | Jalankan `docker compose exec n8n node /scripts/telegram.js tes` untuk melihat pesan error-nya. Pastikan sudah mengirim `/start` ke bot. |
 
 ## Catatan
