@@ -4,7 +4,7 @@
   "nodes": [
     {
       "parameters": {
-        "content": "## Threads AutoPost — Cerita AI\nWorkflow ini membuat cerita dengan Claude lalu mempostingnya ke Threads sebagai **utas** (bagian 1 = post utama, bagian berikutnya = balasan berantai).\n\n**Jam posting** diatur di node **Jadwal Posting** (cron, default dari `POST_CRON` di `.env`, contoh `0 7,12,19,21 * * *` = jam 07:00, 12:00, 19:00, 21:00).\n**Gaya cerita** diatur lewat `STORY_*` di `.env`; aturan menulis lengkap ada di node **Susun Prompt**.\n**Mode uji**: isi `DRY_RUN=true` di `.env` → cerita hanya dibuat, tidak diposting.\n**Notifikasi Telegram** (opsional): isi `TELEGRAM_BOT_TOKEN` dan `TELEGRAM_CHAT_ID` di `.env`.\n**Antrian Google Sheets** (opsional): isi `GSHEET_URL` dan `GSHEET_SECRET` di `.env`.\n**Gambar di post pertama** (opsional): isi `GAMBAR_SUMBER` (`pexels`, `ai`, atau `url`) di `.env`.\n\n3 cara menjalankan:\n1. Otomatis sesuai jadwal (workflow harus di-*Publish*/aktif)\n2. Tombol *Execute workflow* dari **Tes Manual**\n3. `POST /webhook/threads-autopost` dengan header `x-webhook-secret` (lihat README)",
+        "content": "## Threads AutoPost — Cerita AI\nWorkflow ini membuat cerita dengan Claude lalu mempostingnya ke Threads sebagai **utas** (bagian 1 = post utama, bagian berikutnya = balasan berantai).\n\n**Jam posting** diatur di node **Jadwal Posting** (cron, default dari `POST_CRON` di `.env`, contoh `0 7,12,19,21 * * *` = jam 07:00, 12:00, 19:00, 21:00).\n**Gaya cerita** diatur lewat `STORY_*` di `.env`; aturan menulis lengkap ada di node **Susun Prompt**.\n**Mode uji**: isi `DRY_RUN=true` di `.env` → cerita hanya dibuat, tidak diposting.\n**Notifikasi Telegram** (opsional): isi `TELEGRAM_BOT_TOKEN` dan `TELEGRAM_CHAT_ID` di `.env`.\n**Antrian Google Sheets** (opsional): isi `GSHEET_URL` dan `GSHEET_SECRET` di `.env`.\n**Gambar di post pertama** (opsional): isi `GAMBAR_SUMBER` (`pexels`, `ai`, atau `url`) di `.env`.\n**Banyak akun** (opsional): isi `AKUN_2_THREADS_ACCESS_TOKEN`, `AKUN_3_...`, dst. di `.env`.\n\n3 cara menjalankan:\n1. Otomatis sesuai jadwal (workflow harus di-*Publish*/aktif)\n2. Tombol *Execute workflow* dari **Tes Manual**\n3. `POST /webhook/threads-autopost` dengan header `x-webhook-secret` (lihat README)",
         "width": 1060,
         "height": 420,
         "color": 7
@@ -15,7 +15,7 @@
       "typeVersion": 1,
       "position": [
         -80,
-        -480
+        -760
       ]
     },
     {
@@ -40,7 +40,7 @@
           "interval": [
             {
               "field": "cronExpression",
-              "expression": "={{ $env.POST_CRON || '0 7,12,19,21 * * *' }}"
+              "expression": "={{ (() => { const e = (k) => String($env[k] ?? '').trim(); const crons = []; for (let no = 1; no <= 10; no++) { const p = 'AKUN_' + no + '_'; const token = e(p + 'THREADS_ACCESS_TOKEN') || (no === 1 ? e('THREADS_ACCESS_TOKEN') : ''); if (!token || /^(0|false|no|off|tidak)$/i.test(e(p + 'AKTIF'))) continue; crons.push(e(p + 'POST_CRON') || e('POST_CRON') || '0 7,12,19,21 * * *'); } if (!crons.length) crons.push(e('POST_CRON') || '0 7,12,19,21 * * *'); const f = crons.map((c) => { const x = c.split(/\\s+/); return x.length === 6 ? x.slice(1) : x; }); return [0, 1, 2, 3, 4].map((i) => (f.some((x) => x[i] === '*' || x[i] === '?') ? '*' : [...new Set(f.map((x) => x[i]))].join(','))).join(' '); })() }}"
             }
           ]
         }
@@ -84,7 +84,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Cek secret supaya webhook ini tidak bisa dipakai orang lain.\n// Kirim secret lewat header \"x-webhook-secret\" atau query \"?secret=\".\nconst secret = String($env.WEBHOOK_SECRET || '').trim();\nconst req = $input.first().json;\nconst given = String(req.headers?.['x-webhook-secret'] || req.query?.secret || '').trim();\n\nreturn [\n  {\n    json: {\n      authorized: secret.length > 0 && given === secret,\n      body: req.body && typeof req.body === 'object' ? req.body : {},\n    },\n  },\n];"
+        "jsCode": "// Cek secret supaya webhook ini tidak bisa dipakai orang lain, lalu cek akun yang diminta.\n// Kirim secret lewat header \"x-webhook-secret\" atau query \"?secret=\".\n// Pilih akun lewat field \"akun\": nomor (1, 2, ...) atau nama (AKUN_n_NAMA). Kosong = akun 1.\nconst e = (k) => String($env[k] ?? '').trim();\nconst secret = e('WEBHOOK_SECRET');\nconst req = $input.first().json;\nconst given = String(req.headers?.['x-webhook-secret'] || req.query?.secret || '').trim();\nconst body = req.body && typeof req.body === 'object' ? req.body : {};\n\nconst akunList = [];\nfor (let no = 1; no <= 10; no++) {\n  const p = `AKUN_${no}_`;\n  if (no > 1 && !e(p + 'THREADS_ACCESS_TOKEN')) continue;\n  if (/^(0|false|no|off|tidak)$/i.test(e(p + 'AKTIF'))) continue;\n  akunList.push({ no, nama: e(p + 'NAMA') || `Akun ${no}` });\n}\nconst diminta = String(body.akun ?? '').trim();\nconst akun = diminta\n  ? akunList.find((a) => String(a.no) === diminta || a.nama.toLowerCase() === diminta.toLowerCase())\n  : akunList.find((a) => a.no === 1);\n\nreturn [\n  {\n    json: {\n      authorized: secret.length > 0 && given === secret,\n      akunValid: !!akun,\n      akunNo: akun ? akun.no : null,\n      akunDiminta: diminta,\n      daftarAkun: akunList.map((a) => `${a.no} (${a.nama})`).join(', '),\n      body,\n    },\n  },\n];"
       },
       "id": "57c03814-b29e-7856-fead-716b9bc2785c",
       "name": "Validasi Webhook",
@@ -131,6 +131,57 @@
     },
     {
       "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c2792c6a-1ce8-6ca3-e1ba-632a031dc7cb",
+              "leftValue": "={{ $json.akunValid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "6ddf1d31-9df3-01bd-fd15-14ada04f06f6",
+      "name": "Akun Dikenal?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, pesan: 'Akun \"' + $json.akunDiminta + '\" tidak ditemukan. Akun yang tersedia: ' + $json.daftarAkun }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "94f817af-7fcc-21f7-0251-dc04232550da",
+      "name": "Respon Akun Salah",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        880,
+        480
+      ]
+    },
+    {
+      "parameters": {
         "respondWith": "json",
         "responseBody": "{\n  \"ok\": true,\n  \"pesan\": \"Permintaan diterima. Cerita sedang dibuat, cek hasilnya di menu Executions n8n.\"\n}",
         "options": {
@@ -142,8 +193,8 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        660,
-        340
+        880,
+        300
       ]
     },
     {
@@ -165,6 +216,182 @@
     },
     {
       "parameters": {
+        "jsCode": "// Tentukan akun Threads mana yang diproses kali ini.\n// Akun 1 = pengaturan utama (THREADS_ACCESS_TOKEN, dst). Akun 2-10 = AKUN_2_THREADS_ACCESS_TOKEN, AKUN_3_..., dst.\n// Jadwal: tiap akun memakai AKUN_n_POST_CRON (kalau kosong ikut POST_CRON).\nconst MAKS_AKUN = 10;\nconst e = (k) => String($env[k] ?? '').trim();\nconst mati = (v) => /^(0|false|no|off|tidak)$/i.test(v);\n\nconst akunList = [];\nfor (let no = 1; no <= MAKS_AKUN; no++) {\n  const p = `AKUN_${no}_`;\n  const token = e(p + 'THREADS_ACCESS_TOKEN') || (no === 1 ? e('THREADS_ACCESS_TOKEN') : '');\n  if (no > 1 && !token) continue;\n  if (mati(e(p + 'AKTIF'))) continue;\n  akunList.push({\n    no,\n    nama: e(p + 'NAMA') || `Akun ${no}`,\n    cron: e(p + 'POST_CRON') || e('POST_CRON') || '0 7,12,19,21 * * *',\n    punyaToken: !!token,\n  });\n}\n\n// --- Pencocokan cron (menit jam tanggal bulan hari), sama seperti crontab biasa\nconst NAMA = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,\n  sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };\nconst angka = (v) => (/^\\d+$/.test(v) ? Number(v) : NAMA[String(v).toLowerCase()]);\nconst cocokField = (field, nilai, min, max, hari) =>\n  field.split(',').some((bagian) => {\n    const [rentang, langkahStr] = bagian.split('/');\n    const langkah = langkahStr ? Number(langkahStr) : 1;\n    let lo, hi;\n    if (rentang === '*' || rentang === '?') [lo, hi] = [min, max];\n    else if (rentang.includes('-')) [lo, hi] = rentang.split('-').map(angka);\n    else [lo, hi] = [angka(rentang), langkahStr ? max : angka(rentang)];\n    if (lo === undefined || hi === undefined || !(langkah > 0)) throw new Error(`Bagian cron tidak dikenal: \"${bagian}\"`);\n    for (let v = lo; v <= hi; v += langkah) if ((hari && v === 7 ? 0 : v) === nilai) return true;\n    return false;\n  });\nconst cocokCron = (cron, t) => {\n  let f = cron.trim().split(/\\s+/);\n  if (f.length === 6) f = f.slice(1); // format dengan detik: abaikan detiknya\n  if (f.length !== 5) throw new Error(`Format cron salah: \"${cron}\"`);\n  const [mnt, jam, tgl, bln, hari] = f;\n  const cocokTgl = cocokField(tgl, t.day, 1, 31, false);\n  const cocokHari = cocokField(hari, t.weekday % 7, 0, 7, true);\n  const bebas = (x) => x === '*' || x === '?';\n  // Seperti crontab: kalau tanggal DAN hari sama-sama dibatasi, cukup salah satu yang cocok\n  const cocokHariTgl = !bebas(tgl) && !bebas(hari) ? cocokTgl || cocokHari : cocokTgl && cocokHari;\n  return cocokField(mnt, t.minute, 0, 59, false) && cocokField(jam, t.hour, 0, 23, false) && cocokField(bln, t.month, 1, 12, false) && cocokHariTgl;\n};\n\nconst fromWebhook = $('Webhook Manual').isExecuted;\nconst fromSchedule = $('Jadwal Posting').isExecuted;\nconst source = fromWebhook ? 'webhook' : fromSchedule ? 'jadwal' : 'manual';\nconst body = fromWebhook ? $('Validasi Webhook').first().json.body || {} : {};\n\nlet target;\nif (fromSchedule) {\n  // Waktu jadwal (bukan waktu sekarang), supaya tetap tepat walaupun eksekusi sempat tertunda\n  const ts = $('Jadwal Posting').first().json.timestamp;\n  const waktu = (ts ? DateTime.fromISO(ts) : $now).setZone($now.zoneName);\n  target = akunList.filter((a) => a.punyaToken && cocokCron(a.cron, waktu));\n} else if (fromWebhook) {\n  target = akunList.filter((a) => a.no === $('Validasi Webhook').first().json.akunNo);\n} else {\n  const no = Number(e('TES_AKUN')) || 1;\n  target = akunList.filter((a) => a.no === no);\n  if (!target.length) throw new Error(`TES_AKUN=${no}: akun ini tidak ada atau tidak aktif`);\n}\n\nconst jitterMenit = Math.min(55, Math.max(0, parseInt(e('POST_JITTER_MINUTES'), 10) || 0));\nconst jitterSeconds = fromSchedule && $execution.mode === 'production' && jitterMenit > 0 ? 1 + Math.floor(Math.random() * jitterMenit * 60) : 1;\n\nreturn target.map((a) => ({\n  json: { no: a.no, nama: a.nama, jumlahAkun: akunList.length, source, body, jitterSeconds },\n}));"
+      },
+      "id": "9cbc1186-e352-ef71-b0a3-bc30b92f8a36",
+      "name": "Daftar Akun",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "4bc147f8-1b32-5cd7-5c45-0f95886a0586",
+              "leftValue": "={{ $json.source === 'manual' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "138fac76-6a3b-2093-ba10-ffd1c734d793",
+      "name": "Langsung?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1100,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "amount": "={{ $json.jitterSeconds }}",
+        "unit": "seconds"
+      },
+      "id": "0d689e77-f8a0-2fed-2d2f-c76f4c4955a3",
+      "name": "Jeda Acak",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1320,
+        -200
+      ],
+      "webhookId": "9d529bd1-b098-8a27-da29-75481b7adc92"
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "02ee1428-e1e1-acb1-0cad-f9ec9d316309",
+      "name": "Loop Akun",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1540,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $workflow.id }}"
+        },
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "71ff2e80-0462-f82d-be53-6678b8259acf",
+      "name": "Jalankan Akun",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1760,
+        -200
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Dijalankan setelah satu akun selesai diproses. Kalau akun itu gagal, siapkan pesan Telegram berisi nama akunnya.\n// Akun berikutnya tetap diproses walaupun akun ini gagal.\nconst e = (k) => String($env[k] ?? '').trim();\nconst akun = $('Loop Akun').first(1).json;\nconst items = $input.all();\n// Sub-eksekusi yang gagal mengembalikan satu item berisi { error: \"pesan\" }\nconst gagal = items.length === 1 && typeof items[0].json.error === 'string';\nif (!gagal) return [{ json: { akun: akun.no, gagal: false } }];\n\nconst pesanError = items[0].json.error.replace(/\\s*\\[line \\d+\\]$/, '');\nconst subId = items[0].metadata?.subExecution?.executionId;\nconst base = (e('WEBHOOK_URL') || 'http://localhost:5678/').replace(/\\/+$/, '');\nconst link = `${base}/workflow/${$workflow.id}/executions${subId ? `/${subId}` : ''}`;\n\nconst token = e('TELEGRAM_BOT_TOKEN');\nconst chatId = e(`AKUN_${akun.no}_TELEGRAM_CHAT_ID`) || e('TELEGRAM_CHAT_ID');\nconst notif = token && chatId && !/^(off|false|no|0)$/i.test(e('TELEGRAM_NOTIFY') || 'semua');\nconst text = ['❌ Threads AutoPost gagal', `👤 ${akun.nama}`, '', `Error: ${pesanError.slice(0, 500)}`, '', `Lihat detailnya di n8n: ${link}`].join('\\n');\n\nreturn [{ json: { akun: akun.no, gagal: true, error: pesanError, ...(notif ? { text, chat_id: chatId } : {}) } }];"
+      },
+      "id": "6f68d055-adf0-c087-6cf0-ac0bfe625272",
+      "name": "Cek Hasil Akun",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "2a554314-be75-b1e1-80e4-f39d1f8a98c9",
+              "leftValue": "={{ !!$json.text }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "cc0daa05-d633-47db-648a-51f3813d7f4e",
+      "name": "Kirim Laporan Gagal?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2200,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "955d94fa-1062-56b6-8386-dcb30a6f7aea",
+      "name": "Saat Dipanggil",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        1100,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Banyak akun Threads\nAkun 1 = pengaturan utama. Akun 2-10 = `AKUN_n_THREADS_ACCESS_TOKEN` + pengaturan lain berawalan `AKUN_n_`.\n\nSetiap jadwal, **Daftar Akun** memilih akun yang jadwalnya cocok, lalu **Jalankan Akun** memproses akun itu satu per satu sebagai sub-eksekusi workflow ini (mulai dari **Saat Dipanggil**). Kalau satu akun gagal, akun lain tetap jalan.\n\n**Tes Manual** langsung memproses satu akun (`TES_AKUN`, default 1).",
+        "width": 560,
+        "height": 420,
+        "color": 2
+      },
+      "id": "99851d19-6725-5d52-0b30-0fd49dfbe0af",
+      "name": "Catatan Akun",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1000,
+        -760
+      ]
+    },
+    {
+      "parameters": {
         "content": "## Antrian Google Sheets (opsional)\nKalau `GSHEET_URL` diisi, cerita diambil dari sheet **Antrian** (kolom `tanggal`, `jam`, `kategori`, `ide`, `jumlah_bagian`, `status`, `judul`, `link`, `catatan`).\n\n`ANTRIAN_MODE=urut`: baris kosong status-nya diposting berurutan, satu per jadwal. Antrian habis → kategori acak (`ANTRIAN_KOSONG=acak`) atau dilewati (`lewati`).\n`ANTRIAN_MODE=terjadwal`: hanya baris yang punya tanggal/jam, diposting saat waktunya tiba.\n\nStatus baris: `diproses` → `terposting` (plus judul & link) atau `gagal` (plus pesan error). Kosongkan status untuk mengulang.",
         "width": 940,
         "height": 420,
@@ -175,8 +402,8 @@
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        1040,
-        -480
+        1600,
+        -760
       ]
     },
     {
@@ -209,7 +436,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        880,
+        1320,
         200
       ]
     },
@@ -229,7 +456,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1100,
+        1540,
         60
       ],
       "retryOnFail": true,
@@ -239,14 +466,14 @@
     },
     {
       "parameters": {
-        "jsCode": "// Semua pengaturan dibaca dari environment variable (file .env), lihat README.\n// Node ini juga memilih cerita berikutnya: dari antrian Google Sheets, dari webhook, atau kategori acak.\n\nconst env = (key, fallback = '') => {\n  const v = $env[key];\n  return v === undefined || v === null || String(v).trim() === '' ? fallback : String(v).trim();\n};\nconst toInt = (v, fallback) => {\n  const n = parseInt(v, 10);\n  return Number.isFinite(n) ? n : fallback;\n};\nconst toBool = (v) => /^(1|true|yes|ya|y|on)$/i.test(String(v ?? '').trim());\nconst clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));\nconst randInt = (lo, hi) => lo + Math.floor(Math.random() * (hi - lo + 1));\n\nconst fromWebhook = $('Webhook Manual').isExecuted;\nconst fromSchedule = $('Jadwal Posting').isExecuted;\nconst source = fromWebhook ? 'webhook' : fromSchedule ? 'jadwal' : 'manual';\nconst body = fromWebhook ? $('Validasi Webhook').first().json.body || {} : {};\n\nconst store = $getWorkflowStaticData('global');\nconst history = Array.isArray(store.history) ? store.history : [];\n\nconst dryRun = fromWebhook && body.dry_run !== undefined ? toBool(body.dry_run) : toBool(env('DRY_RUN', 'false'));\n\n// --- Antrian Google Sheets (kalau GSHEET_URL diisi). Webhook yang menyebut kategori/ide tidak memakai antrian.\n// ANTRIAN_MODE=urut      : baris diposting berurutan, satu per jadwal. tanggal/jam = paling cepat kapan boleh diposting.\n// ANTRIAN_MODE=terjadwal : hanya baris yang punya tanggal/jam, diposting saat waktunya tiba.\nlet antrian = null;\nconst antrianPeringatan = [];\nif ($('Ambil Antrian').isExecuted && !(body.kategori || body.ide)) {\n  const res = $('Ambil Antrian').first().json;\n  if (!res.ok) throw new Error('Antrian Google Sheets gagal dibaca: ' + (res.error || JSON.stringify(res).slice(0, 300)));\n  const mode = env('ANTRIAN_MODE', 'urut').toLowerCase() === 'terjadwal' ? 'terjadwal' : 'urut';\n  const zone = $now.zoneName;\n  const parseFirst = (text, formats, opts) => {\n    for (const f of formats) {\n      const dt = DateTime.fromFormat(text, f, { zone, ...opts });\n      if (dt.isValid) return dt;\n    }\n    return null;\n  };\n  // null = tanpa waktu, undefined = format tidak dikenali\n  const parseWaktu = (tanggal, jam) => {\n    tanggal = String(tanggal ?? '').trim();\n    jam = String(jam ?? '').trim().toUpperCase();\n    if (!tanggal && !jam) return null;\n    let waktu = $now.startOf('day');\n    if (tanggal) {\n      waktu = parseFirst(tanggal, ['yyyy-MM-dd', 'd/M/yyyy', 'd-M-yyyy', 'd/M/yy', 'yyyy-MM-dd HH:mm']);\n      if (!waktu) return undefined;\n    }\n    if (jam) {\n      const t = parseFirst(jam, ['H:mm', 'H.mm', 'H:mm:ss', 'H.mm.ss', 'h:mm a', 'h:mm:ss a', 'h.mm a'], { locale: 'en' });\n      if (!t) return undefined;\n      waktu = waktu.set({ hour: t.hour, minute: t.minute, second: 0, millisecond: 0 });\n    }\n    return waktu;\n  };\n\n  const kandidat = [];\n  for (const r of res.rows || []) {\n    if (String(r.status ?? '').trim()) continue;\n    if (!String(r.kategori ?? '').trim() && !String(r.ide ?? '').trim()) continue;\n    const waktu = parseWaktu(r.tanggal, r.jam);\n    if (waktu === undefined) {\n      antrianPeringatan.push(`Baris ${r.row}: format tanggal/jam tidak dikenali (\"${r.tanggal}\" \"${r.jam}\")`);\n      continue;\n    }\n    if (mode === 'terjadwal' && !waktu) continue;\n    if (waktu && waktu > $now) continue;\n    kandidat.push({ ...r, waktu });\n  }\n  if (mode === 'terjadwal') kandidat.sort((a, b) => a.waktu - b.waktu);\n\n  const pick = kandidat[0];\n  if (pick) {\n    antrian = {\n      row: pick.row,\n      kategori: String(pick.kategori ?? '').trim(),\n      ide: String(pick.ide ?? '').trim(),\n      jumlah_bagian: toInt(pick.jumlah_bagian, 0),\n      gambar: String(pick.gambar ?? '').trim(),\n      waktu: pick.waktu ? pick.waktu.toFormat('yyyy-MM-dd HH:mm') : null,\n    };\n  } else if (fromSchedule && (mode === 'terjadwal' || env('ANTRIAN_KOSONG', 'acak').toLowerCase() === 'lewati')) {\n    // Tidak ada baris yang waktunya tiba: jadwal kali ini dilewati\n    return [];\n  }\n}\nconst pilihan = antrian || body;\n\n// --- Kategori cerita: dari antrian/webhook, atau diacak dari STORY_NICHES (tidak sama dengan postingan terakhir)\nconst niches = env(\n  'STORY_NICHES',\n  'cerita horor kos-kosan|kisah lucu di kantor|kisah inspiratif perantau|cerita cinta masa SMA|kisah haru tentang orang tua'\n)\n  .split('|')\n  .map((s) => s.trim())\n  .filter(Boolean);\nconst ide = String(pilihan.ide || '').trim();\nlet kategori = String(pilihan.kategori || '').trim();\nif (!kategori && ide) kategori = 'bebas, sesuaikan dengan ide cerita';\nif (!kategori) {\n  const last = history.length ? history[history.length - 1].kategori : null;\n  const pool = niches.length > 1 ? niches.filter((n) => n !== last) : niches;\n  kategori = pool[Math.floor(Math.random() * pool.length)];\n}\n\n// --- Jumlah bagian utas\nconst minParts = clamp(toInt(env('STORY_MIN_PARTS'), 3), 1, 10);\nconst maxParts = clamp(toInt(env('STORY_MAX_PARTS'), 6), minParts, 10);\nconst parts = clamp(toInt(pilihan.jumlah_bagian, 0) || randInt(minParts, maxParts), 1, 10);\n\n// --- Token Threads: pakai token hasil refresh otomatis kalau ada, kalau tidak pakai dari .env\nconst envToken = env('THREADS_ACCESS_TOKEN');\nconst fingerprint = (t) => (t ? t.slice(-12) : '');\nif (store.threadsToken && store.envTokenFingerprint !== fingerprint(envToken)) {\n  // Token di .env sudah diganti manual, jadi token lama hasil refresh dibuang\n  delete store.threadsToken;\n  delete store.threadsTokenExpiresAt;\n  delete store.envTokenFingerprint;\n}\nconst threadsToken = store.threadsToken || envToken;\nif (!dryRun && !threadsToken) throw new Error('THREADS_ACCESS_TOKEN belum diisi di file .env');\nif (!env('ANTHROPIC_API_KEY')) throw new Error('ANTHROPIC_API_KEY belum diisi di file .env');\n\n// --- Gambar di post pertama\n// GAMBAR_SUMBER: off | pexels (foto stok sesuai cerita) | ai (ilustrasi AI) | url (acak dari GAMBAR_URLS)\n// URL gambar dari kolom \"gambar\" di antrian atau field \"gambar\" di webhook selalu dipakai lebih dulu.\nconst gambarSumber = env('GAMBAR_SUMBER', 'off').toLowerCase();\nif (!['off', 'pexels', 'ai', 'url'].includes(gambarSumber)) {\n  throw new Error(`GAMBAR_SUMBER tidak dikenal: \"${gambarSumber}\". Pilihan: off, pexels, ai, url`);\n}\nif (gambarSumber === 'pexels' && !env('PEXELS_API_KEY')) throw new Error('GAMBAR_SUMBER=pexels butuh PEXELS_API_KEY di .env');\nconst gambar = {\n  sumber: gambarSumber,\n  manual: String(body.gambar || pilihan.gambar || '').trim(),\n  kredit: toBool(env('GAMBAR_KREDIT', 'true')),\n  gaya: env('GAMBAR_GAYA', 'cinematic digital illustration, moody lighting, rich colors'),\n  aiUrl: env(\n    'GAMBAR_AI_URL',\n    'https://image.pollinations.ai/prompt/{prompt}?width=1080&height=1350&seed={seed}&nologo=true&model=flux'\n  ),\n  urls: env('GAMBAR_URLS')\n    .split('|')\n    .map((u) => u.trim())\n    .filter(Boolean),\n  jedaDetik: clamp(toInt(env('GAMBAR_JEDA_DETIK'), 30), 5, 120),\n  terpakai: Array.isArray(store.gambarTerpakai) ? store.gambarTerpakai : [],\n};\nif (gambarSumber === 'url' && gambar.urls.length === 0) throw new Error('GAMBAR_SUMBER=url butuh daftar GAMBAR_URLS di .env');\n\nconst threadsHost = env('THREADS_API_HOST', 'https://graph.threads.net').replace(/\\/+$/, '');\nconst jitterMinutes = clamp(toInt(env('POST_JITTER_MINUTES'), 0), 0, 55);\n\nreturn [\n  {\n    json: {\n      source,\n      dryRun,\n      kategori,\n      ide,\n      parts,\n      antrian,\n      antrianPeringatan,\n      gambar,\n      executionId: $execution.id,\n      style: env(\n        'STORY_STYLE',\n        'Bahasa Indonesia santai sehari-hari pakai aku-kamu, seperti orang curhat di Threads. Kalimat pendek, jujur, dan relate.'\n      ),\n      persona: env('STORY_PERSONA'),\n      extraInstructions: env('STORY_EXTRA_INSTRUCTIONS'),\n      today: $now.setLocale('id').toFormat('cccc, d LLLL yyyy'),\n      recentTitles: history.slice(-15).map((h) => `${h.judul} (${h.kategori})`),\n      numbering: toBool(env('THREAD_NUMBERING', 'true')),\n      topicTagMode: env('THREADS_TOPIC_TAG', 'auto'),\n      claude: {\n        model: env('AI_MODEL', 'claude-opus-5-5'),\n        effort: env('AI_EFFORT', 'medium'),\n        // \"default\" = kalau model menolak, API otomatis mencoba model cadangan. Isi \"off\" untuk mematikan.\n        fallback: /^(off|false|no|0)$/i.test(env('AI_FALLBACK', 'default')) ? '' : 'default',\n      },\n      threadsApi: `${threadsHost}/v1.0`,\n      threadsUserId: env('THREADS_USER_ID', 'me'),\n      threadsToken,\n      tokenSource: store.threadsToken ? 'refresh otomatis' : '.env',\n      publishDelaySeconds: clamp(toInt(env('PUBLISH_DELAY_SECONDS'), 10), 1, 60),\n      // Jeda acak hanya untuk posting terjadwal yang berjalan otomatis, supaya jam posting tidak terlalu kaku\n      jitterSeconds: fromSchedule && $execution.mode === 'production' && jitterMinutes > 0 ? randInt(1, jitterMinutes * 60) : 1,\n      historySize: clamp(toInt(env('HISTORY_SIZE'), 30), 1, 200),\n    },\n  },\n];"
+        "jsCode": "// Semua pengaturan dibaca dari environment variable (file .env), lihat README.\n// Node ini juga memilih cerita berikutnya: dari antrian Google Sheets, dari webhook, atau kategori acak.\n\n// Akun yang sedang diproses (dari node Daftar Akun, atau dari eksekusi induk lewat Saat Dipanggil)\nconst akunItem = $('Saat Dipanggil').isExecuted ? $('Saat Dipanggil').first().json : $('Daftar Akun').first().json;\nconst no = Number(akunItem.no) || 1;\n\n// Pengaturan berikut bisa dibedakan per akun dengan awalan AKUN_n_ (misalnya AKUN_2_STORY_NICHES).\n// Kalau tidak diisi, ikut pengaturan utama.\nconst PER_AKUN = new Set([\n  'THREADS_ACCESS_TOKEN', 'THREADS_USER_ID', 'DRY_RUN', 'STORY_NICHES', 'STORY_STYLE', 'STORY_PERSONA',\n  'STORY_EXTRA_INSTRUCTIONS', 'STORY_MIN_PARTS', 'STORY_MAX_PARTS', 'THREAD_NUMBERING', 'THREADS_TOPIC_TAG',\n  'AI_MODEL', 'AI_EFFORT', 'GAMBAR_SUMBER', 'GAMBAR_GAYA', 'GAMBAR_URLS', 'GAMBAR_KREDIT', 'ANTRIAN_KOSONG',\n]);\n// Token & ID akun 2 dst. tidak boleh ikut akun utama, supaya tidak salah posting ke akun lain\nconst TANPA_CADANGAN = new Set(['THREADS_ACCESS_TOKEN', 'THREADS_USER_ID']);\nconst kosong = (v) => v === undefined || v === null || String(v).trim() === '';\nconst env = (key, fallback = '') => {\n  if (PER_AKUN.has(key)) {\n    const v = $env[`AKUN_${no}_${key}`];\n    if (!kosong(v)) return String(v).trim();\n    if (no > 1 && TANPA_CADANGAN.has(key)) return fallback;\n  }\n  const v = $env[key];\n  return kosong(v) ? fallback : String(v).trim();\n};\nconst toInt = (v, fallback) => {\n  const n = parseInt(v, 10);\n  return Number.isFinite(n) ? n : fallback;\n};\nconst toBool = (v) => /^(1|true|yes|ya|y|on)$/i.test(String(v ?? '').trim());\nconst clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));\nconst randInt = (lo, hi) => lo + Math.floor(Math.random() * (hi - lo + 1));\n\nconst source = akunItem.source || 'manual';\nconst fromWebhook = source === 'webhook';\nconst fromSchedule = source === 'jadwal';\nconst body = akunItem.body || {};\n\n// Data tersimpan per akun. Akun 1 juga membaca data lama (sebelum fitur banyak akun) yang ada di luar store.akun.\nconst store = $getWorkflowStaticData('global');\nconst simpanan = (store.akun && store.akun[no]) || (no === 1 ? store : {});\nconst history = Array.isArray(simpanan.history) ? simpanan.history : [];\n\nconst dryRun = fromWebhook && body.dry_run !== undefined ? toBool(body.dry_run) : toBool(env('DRY_RUN', 'false'));\n\n// --- Antrian Google Sheets (kalau GSHEET_URL diisi). Webhook yang menyebut kategori/ide tidak memakai antrian.\n// ANTRIAN_MODE=urut      : baris diposting berurutan, satu per jadwal. tanggal/jam = paling cepat kapan boleh diposting.\n// ANTRIAN_MODE=terjadwal : hanya baris yang punya tanggal/jam, diposting saat waktunya tiba.\nlet antrian = null;\nconst antrianPeringatan = [];\nif ($('Ambil Antrian').isExecuted && !(body.kategori || body.ide)) {\n  const res = $('Ambil Antrian').first().json;\n  if (!res.ok) throw new Error('Antrian Google Sheets gagal dibaca: ' + (res.error || JSON.stringify(res).slice(0, 300)));\n  const mode = env('ANTRIAN_MODE', 'urut').toLowerCase() === 'terjadwal' ? 'terjadwal' : 'urut';\n  const zone = $now.zoneName;\n  const parseFirst = (text, formats, opts) => {\n    for (const f of formats) {\n      const dt = DateTime.fromFormat(text, f, { zone, ...opts });\n      if (dt.isValid) return dt;\n    }\n    return null;\n  };\n  // null = tanpa waktu, undefined = format tidak dikenali\n  const parseWaktu = (tanggal, jam) => {\n    tanggal = String(tanggal ?? '').trim();\n    jam = String(jam ?? '').trim().toUpperCase();\n    if (!tanggal && !jam) return null;\n    let waktu = $now.startOf('day');\n    if (tanggal) {\n      waktu = parseFirst(tanggal, ['yyyy-MM-dd', 'd/M/yyyy', 'd-M-yyyy', 'd/M/yy', 'yyyy-MM-dd HH:mm']);\n      if (!waktu) return undefined;\n    }\n    if (jam) {\n      const t = parseFirst(jam, ['H:mm', 'H.mm', 'H:mm:ss', 'H.mm.ss', 'h:mm a', 'h:mm:ss a', 'h.mm a'], { locale: 'en' });\n      if (!t) return undefined;\n      waktu = waktu.set({ hour: t.hour, minute: t.minute, second: 0, millisecond: 0 });\n    }\n    return waktu;\n  };\n\n  // Kolom \"akun\" (opsional): kosong = boleh dipakai akun mana saja, atau isi nomor/nama akun\n  const untukAkunIni = (v) => {\n    v = String(v ?? '').trim().toLowerCase();\n    return !v || v === String(no) || v === String(akunItem.nama || '').toLowerCase();\n  };\n  const kandidat = [];\n  for (const r of res.rows || []) {\n    if (String(r.status ?? '').trim()) continue;\n    if (!untukAkunIni(r.akun)) continue;\n    if (!String(r.kategori ?? '').trim() && !String(r.ide ?? '').trim()) continue;\n    const waktu = parseWaktu(r.tanggal, r.jam);\n    if (waktu === undefined) {\n      antrianPeringatan.push(`Baris ${r.row}: format tanggal/jam tidak dikenali (\"${r.tanggal}\" \"${r.jam}\")`);\n      continue;\n    }\n    if (mode === 'terjadwal' && !waktu) continue;\n    if (waktu && waktu > $now) continue;\n    kandidat.push({ ...r, waktu });\n  }\n  if (mode === 'terjadwal') kandidat.sort((a, b) => a.waktu - b.waktu);\n\n  const pick = kandidat[0];\n  if (pick) {\n    antrian = {\n      row: pick.row,\n      kategori: String(pick.kategori ?? '').trim(),\n      ide: String(pick.ide ?? '').trim(),\n      jumlah_bagian: toInt(pick.jumlah_bagian, 0),\n      gambar: String(pick.gambar ?? '').trim(),\n      waktu: pick.waktu ? pick.waktu.toFormat('yyyy-MM-dd HH:mm') : null,\n    };\n  } else if (fromSchedule && (mode === 'terjadwal' || env('ANTRIAN_KOSONG', 'acak').toLowerCase() === 'lewati')) {\n    // Tidak ada baris yang waktunya tiba: jadwal kali ini dilewati\n    return [];\n  }\n}\nconst pilihan = antrian || body;\n\n// --- Kategori cerita: dari antrian/webhook, atau diacak dari STORY_NICHES (tidak sama dengan postingan terakhir)\nconst niches = env(\n  'STORY_NICHES',\n  'cerita horor kos-kosan|kisah lucu di kantor|kisah inspiratif perantau|cerita cinta masa SMA|kisah haru tentang orang tua'\n)\n  .split('|')\n  .map((s) => s.trim())\n  .filter(Boolean);\nconst ide = String(pilihan.ide || '').trim();\nlet kategori = String(pilihan.kategori || '').trim();\nif (!kategori && ide) kategori = 'bebas, sesuaikan dengan ide cerita';\nif (!kategori) {\n  const last = history.length ? history[history.length - 1].kategori : null;\n  const pool = niches.length > 1 ? niches.filter((n) => n !== last) : niches;\n  kategori = pool[Math.floor(Math.random() * pool.length)];\n}\n\n// --- Jumlah bagian utas\nconst minParts = clamp(toInt(env('STORY_MIN_PARTS'), 3), 1, 10);\nconst maxParts = clamp(toInt(env('STORY_MAX_PARTS'), 6), minParts, 10);\nconst parts = clamp(toInt(pilihan.jumlah_bagian, 0) || randInt(minParts, maxParts), 1, 10);\n\n// --- Token Threads: pakai token hasil refresh otomatis kalau ada, kalau tidak pakai dari .env.\n// Kalau token di .env sudah diganti manual, token lama hasil refresh tidak dipakai lagi.\nconst envToken = env('THREADS_ACCESS_TOKEN');\nconst fingerprint = (t) => (t ? t.slice(-12) : '');\nconst tokenRefresh = simpanan.threadsToken && simpanan.envTokenFingerprint === fingerprint(envToken) ? simpanan.threadsToken : '';\nconst threadsToken = tokenRefresh || envToken;\nif (!dryRun && !threadsToken) {\n  throw new Error(`${no === 1 ? 'THREADS_ACCESS_TOKEN' : `AKUN_${no}_THREADS_ACCESS_TOKEN`} belum diisi di file .env`);\n}\nif (!env('ANTHROPIC_API_KEY')) throw new Error('ANTHROPIC_API_KEY belum diisi di file .env');\n\n// --- Gambar di post pertama\n// GAMBAR_SUMBER: off | pexels (foto stok sesuai cerita) | ai (ilustrasi AI) | url (acak dari GAMBAR_URLS)\n// URL gambar dari kolom \"gambar\" di antrian atau field \"gambar\" di webhook selalu dipakai lebih dulu.\nconst gambarSumber = env('GAMBAR_SUMBER', 'off').toLowerCase();\nif (!['off', 'pexels', 'ai', 'url'].includes(gambarSumber)) {\n  throw new Error(`GAMBAR_SUMBER tidak dikenal: \"${gambarSumber}\". Pilihan: off, pexels, ai, url`);\n}\nif (gambarSumber === 'pexels' && !env('PEXELS_API_KEY')) throw new Error('GAMBAR_SUMBER=pexels butuh PEXELS_API_KEY di .env');\nconst gambar = {\n  sumber: gambarSumber,\n  manual: String(body.gambar || pilihan.gambar || '').trim(),\n  kredit: toBool(env('GAMBAR_KREDIT', 'true')),\n  gaya: env('GAMBAR_GAYA', 'cinematic digital illustration, moody lighting, rich colors'),\n  aiUrl: env(\n    'GAMBAR_AI_URL',\n    'https://image.pollinations.ai/prompt/{prompt}?width=1080&height=1350&seed={seed}&nologo=true&model=flux'\n  ),\n  urls: env('GAMBAR_URLS')\n    .split('|')\n    .map((u) => u.trim())\n    .filter(Boolean),\n  jedaDetik: clamp(toInt(env('GAMBAR_JEDA_DETIK'), 30), 5, 120),\n  terpakai: Array.isArray(store.gambarTerpakai) ? store.gambarTerpakai : [],\n};\nif (gambarSumber === 'url' && gambar.urls.length === 0) throw new Error('GAMBAR_SUMBER=url butuh daftar GAMBAR_URLS di .env');\n\nconst threadsHost = env('THREADS_API_HOST', 'https://graph.threads.net').replace(/\\/+$/, '');\n\nreturn [\n  {\n    json: {\n      akun: { no, nama: akunItem.nama || `Akun ${no}`, jumlah: Number(akunItem.jumlahAkun) || 1 },\n      source,\n      dryRun,\n      kategori,\n      ide,\n      parts,\n      antrian,\n      antrianPeringatan,\n      gambar,\n      executionId: $execution.id,\n      style: env(\n        'STORY_STYLE',\n        'Bahasa Indonesia santai sehari-hari pakai aku-kamu, seperti orang curhat di Threads. Kalimat pendek, jujur, dan relate.'\n      ),\n      persona: env('STORY_PERSONA'),\n      extraInstructions: env('STORY_EXTRA_INSTRUCTIONS'),\n      today: $now.setLocale('id').toFormat('cccc, d LLLL yyyy'),\n      recentTitles: history.slice(-15).map((h) => `${h.judul} (${h.kategori})`),\n      numbering: toBool(env('THREAD_NUMBERING', 'true')),\n      topicTagMode: env('THREADS_TOPIC_TAG', 'auto'),\n      claude: {\n        model: env('AI_MODEL', 'claude-opus-5-5'),\n        effort: env('AI_EFFORT', 'medium'),\n        // \"default\" = kalau model menolak, API otomatis mencoba model cadangan. Isi \"off\" untuk mematikan.\n        fallback: /^(off|false|no|0)$/i.test(env('AI_FALLBACK', 'default')) ? '' : 'default',\n      },\n      threadsApi: `${threadsHost}/v1.0`,\n      threadsUserId: env('THREADS_USER_ID', 'me'),\n      threadsToken,\n      tokenSource: tokenRefresh ? 'refresh otomatis' : '.env',\n      publishDelaySeconds: clamp(toInt(env('PUBLISH_DELAY_SECONDS'), 10), 1, 60),\n      historySize: clamp(toInt(env('HISTORY_SIZE'), 30), 1, 200),\n    },\n  },\n];"
       },
       "id": "59a7d3b9-c50c-7fd0-13f8-6d0a4323e858",
       "name": "Siapkan Konfigurasi",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1320,
+        1760,
         200
       ]
     },
@@ -280,7 +507,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        1540,
+        1980,
         200
       ]
     },
@@ -300,27 +527,12 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1760,
+        2200,
         60
       ],
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 5000
-    },
-    {
-      "parameters": {
-        "amount": "={{ $('Siapkan Konfigurasi').first().json.jitterSeconds }}",
-        "unit": "seconds"
-      },
-      "id": "0d689e77-f8a0-2fed-2d2f-c76f4c4955a3",
-      "name": "Jeda Acak",
-      "type": "n8n-nodes-base.wait",
-      "typeVersion": 1.1,
-      "position": [
-        1980,
-        200
-      ],
-      "webhookId": "9d529bd1-b098-8a27-da29-75481b7adc92"
     },
     {
       "parameters": {
@@ -331,7 +543,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2200,
+        2420,
         200
       ]
     },
@@ -354,7 +566,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        2420,
+        2640,
         200
       ],
       "retryOnFail": true,
@@ -370,7 +582,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2640,
+        2860,
         200
       ]
     },
@@ -386,8 +598,8 @@
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        2640,
-        -480
+        2580,
+        -760
       ]
     },
     {
@@ -399,7 +611,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2860,
+        3080,
         200
       ]
     },
@@ -433,7 +645,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        3080,
+        3300,
         200
       ]
     },
@@ -456,7 +668,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        3300,
+        3520,
         60
       ],
       "retryOnFail": true,
@@ -473,7 +685,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3520,
+        3740,
         60
       ]
     },
@@ -507,7 +719,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        3740,
+        3960,
         200
       ]
     },
@@ -530,7 +742,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        3960,
+        4180,
         60
       ],
       "retryOnFail": true,
@@ -547,7 +759,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        4180,
+        4400,
         200
       ]
     },
@@ -581,20 +793,20 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        4400,
+        4620,
         200
       ]
     },
     {
       "parameters": {
-        "jsCode": "// Mode uji (DRY_RUN): cerita hanya ditampilkan di sini, tidak diposting ke Threads.\n// Kalau cerita diambil dari antrian Google Sheets, status barisnya tidak diubah.\nconst cfg = $('Siapkan Konfigurasi').first().json;\nconst posts = $input.all().map((i) => i.json);\n\nreturn [\n  {\n    json: {\n      ok: true,\n      dry_run: true,\n      pesan: 'Mode uji: cerita TIDAK diposting ke Threads.',\n      judul: posts[0].judul,\n      kategori: posts[0].kategori,\n      antrian_baris: cfg.antrian ? cfg.antrian.row : null,\n      antrian_peringatan: cfg.antrianPeringatan,\n      topic_tag: posts[0].topic_tag,\n      gambar: posts[0].gambar,\n      jumlah_bagian: posts.length,\n      bagian: posts.map((p) => p.text),\n      panjang_karakter: posts.map((p) => p.panjang),\n    },\n  },\n];"
+        "jsCode": "// Mode uji (DRY_RUN): cerita hanya ditampilkan di sini, tidak diposting ke Threads.\n// Kalau cerita diambil dari antrian Google Sheets, status barisnya tidak diubah.\nconst cfg = $('Siapkan Konfigurasi').first().json;\nconst posts = $input.all().map((i) => i.json);\n\nreturn [\n  {\n    json: {\n      ok: true,\n      dry_run: true,\n      pesan: 'Mode uji: cerita TIDAK diposting ke Threads.',\n      akun: cfg.akun,\n      judul: posts[0].judul,\n      kategori: posts[0].kategori,\n      antrian_baris: cfg.antrian ? cfg.antrian.row : null,\n      antrian_peringatan: cfg.antrianPeringatan,\n      topic_tag: posts[0].topic_tag,\n      gambar: posts[0].gambar,\n      jumlah_bagian: posts.length,\n      bagian: posts.map((p) => p.text),\n      panjang_karakter: posts.map((p) => p.panjang),\n    },\n  },\n];"
       },
       "id": "7bef44ca-ed0f-4250-2436-399c3de9f7d5",
       "name": "Pratinjau (Dry Run)",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        4620,
+        4840,
         40
       ]
     },
@@ -608,7 +820,7 @@
       "type": "n8n-nodes-base.splitInBatches",
       "typeVersion": 3,
       "position": [
-        4620,
+        4840,
         300
       ]
     },
@@ -626,7 +838,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        4840,
+        5060,
         420
       ],
       "retryOnFail": true,
@@ -643,7 +855,7 @@
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
       "position": [
-        5060,
+        5280,
         420
       ],
       "webhookId": "d8b8895e-40b9-870c-36b0-e05bac0ccef2"
@@ -662,7 +874,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        5280,
+        5500,
         420
       ],
       "retryOnFail": true,
@@ -678,7 +890,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        5500,
+        5720,
         420
       ]
     },
@@ -696,7 +908,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        5720,
+        5940,
         420
       ],
       "retryOnFail": true,
@@ -717,7 +929,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        4840,
+        5060,
         200
       ],
       "executeOnce": true,
@@ -725,14 +937,14 @@
     },
     {
       "parameters": {
-        "jsCode": "// Simpan riwayat cerita (supaya ide tidak berulang) dan tampilkan ringkasan hasil posting.\nconst cfg = $('Siapkan Konfigurasi').first().json;\nconst posts = $('Hasil Gambar').all().map((i) => i.json);\nconst gambar = posts[0].gambar;\nconst postIds = posts.map((_, run) => $('Publish Bagian').first(0, run)?.json?.id).filter(Boolean);\nconst permalink = $input.first().json.permalink || null;\n\nconst store = $getWorkflowStaticData('global');\nconst history = Array.isArray(store.history) ? store.history : [];\nhistory.push({\n  judul: posts[0].judul,\n  kategori: posts[0].kategori,\n  waktu: $now.toISO(),\n  post_id: postIds[0] || null,\n  permalink,\n});\nstore.history = history.slice(-cfg.historySize);\nif (gambar.id) {\n  // Ingat gambar yang sudah dipakai supaya tidak berulang\n  const terpakai = Array.isArray(store.gambarTerpakai) ? store.gambarTerpakai : [];\n  store.gambarTerpakai = [...terpakai.filter((x) => x !== gambar.id), gambar.id].slice(-100);\n}\n\nreturn [\n  {\n    json: {\n      ok: true,\n      pesan: `Utas ${postIds.length} bagian berhasil diposting.`,\n      sumber: cfg.source,\n      antrian_baris: cfg.antrian ? cfg.antrian.row : null,\n      judul: posts[0].judul,\n      kategori: posts[0].kategori,\n      topic_tag: posts[0].topic_tag,\n      gambar,\n      permalink,\n      post_ids: postIds,\n      token_dari: cfg.tokenSource,\n      token_kedaluwarsa: store.threadsTokenExpiresAt || 'tidak diketahui (token dari .env)',\n    },\n  },\n];"
+        "jsCode": "// Simpan riwayat cerita (supaya ide tidak berulang) dan tampilkan ringkasan hasil posting.\nconst cfg = $('Siapkan Konfigurasi').first().json;\nconst posts = $('Hasil Gambar').all().map((i) => i.json);\nconst gambar = posts[0].gambar;\nconst postIds = posts.map((_, run) => $('Publish Bagian').first(0, run)?.json?.id).filter(Boolean);\nconst permalink = $input.first().json.permalink || null;\n\n// Data disimpan per akun di store.akun[n]. Data lama (sebelum fitur banyak akun) dipindahkan ke akun 1.\nconst store = $getWorkflowStaticData('global');\nconst no = cfg.akun.no;\nstore.akun = store.akun || {};\nif (!store.akun[no]) {\n  store.akun[no] = {};\n  if (no === 1) {\n    for (const k of ['history', 'threadsToken', 'threadsTokenExpiresAt', 'envTokenFingerprint']) {\n      if (store[k] !== undefined) store.akun[1][k] = store[k];\n      delete store[k];\n    }\n  }\n}\nconst simpanan = store.akun[no];\nconst history = Array.isArray(simpanan.history) ? simpanan.history : [];\nhistory.push({\n  judul: posts[0].judul,\n  kategori: posts[0].kategori,\n  waktu: $now.toISO(),\n  post_id: postIds[0] || null,\n  permalink,\n});\nsimpanan.history = history.slice(-cfg.historySize);\nif (gambar.id) {\n  // Ingat gambar yang sudah dipakai supaya tidak berulang\n  const terpakai = Array.isArray(store.gambarTerpakai) ? store.gambarTerpakai : [];\n  store.gambarTerpakai = [...terpakai.filter((x) => x !== gambar.id), gambar.id].slice(-100);\n}\n\nreturn [\n  {\n    json: {\n      ok: true,\n      pesan: `Utas ${postIds.length} bagian berhasil diposting.`,\n      akun: cfg.akun,\n      sumber: cfg.source,\n      antrian_baris: cfg.antrian ? cfg.antrian.row : null,\n      judul: posts[0].judul,\n      kategori: posts[0].kategori,\n      topic_tag: posts[0].topic_tag,\n      gambar,\n      permalink,\n      post_ids: postIds,\n      token_dari: cfg.tokenSource,\n      token_kedaluwarsa: simpanan.threadsTokenExpiresAt || 'tidak diketahui (token dari .env)',\n    },\n  },\n];"
       },
       "id": "55a27198-3bac-839e-6914-784d8eb09e3c",
       "name": "Ringkasan & Riwayat",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        5060,
+        5280,
         200
       ]
     },
@@ -758,7 +970,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Ambil token Threads yang sedang dipakai (hasil refresh terakhir, atau dari .env).\nconst envToken = String($env.THREADS_ACCESS_TOKEN || '').trim();\nconst fingerprint = (t) => (t ? t.slice(-12) : '');\nconst store = $getWorkflowStaticData('global');\n\nconst useStored = store.threadsToken && store.envTokenFingerprint === fingerprint(envToken);\nconst token = useStored ? store.threadsToken : envToken;\nif (!token) throw new Error('THREADS_ACCESS_TOKEN belum diisi di file .env');\n\nconst host = String($env.THREADS_API_HOST || 'https://graph.threads.net').trim().replace(/\\/+$/, '');\n\nreturn [{ json: { token, host } }];"
+        "jsCode": "// Ambil token Threads yang sedang dipakai setiap akun (hasil refresh terakhir, atau dari .env).\nconst e = (k) => String($env[k] ?? '').trim();\nconst fingerprint = (t) => (t ? t.slice(-12) : '');\nconst store = $getWorkflowStaticData('global');\nconst host = (e('THREADS_API_HOST') || 'https://graph.threads.net').replace(/\\/+$/, '');\n\nconst hasil = [];\nfor (let no = 1; no <= 10; no++) {\n  const p = `AKUN_${no}_`;\n  const envToken = e(p + 'THREADS_ACCESS_TOKEN') || (no === 1 ? e('THREADS_ACCESS_TOKEN') : '');\n  if (!envToken || /^(0|false|no|off|tidak)$/i.test(e(p + 'AKTIF'))) continue;\n  // Akun 1 juga membaca data lama (sebelum fitur banyak akun)\n  const simpanan = (store.akun && store.akun[no]) || (no === 1 ? store : {});\n  const pakaiSimpanan = simpanan.threadsToken && simpanan.envTokenFingerprint === fingerprint(envToken);\n  hasil.push({ json: { no, nama: e(p + 'NAMA') || `Akun ${no}`, token: pakaiSimpanan ? simpanan.threadsToken : envToken, host } });\n}\nif (hasil.length === 0) throw new Error('Belum ada token Threads di .env (THREADS_ACCESS_TOKEN)');\nreturn hasil;"
       },
       "id": "c7cb33b8-2783-fe49-3961-be89b125345a",
       "name": "Ambil Token Aktif",
@@ -788,11 +1000,12 @@
       ],
       "retryOnFail": true,
       "maxTries": 3,
-      "waitBetweenTries": 5000
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
-        "jsCode": "// Simpan token baru. Token long-lived Threads berlaku 60 hari dan diperpanjang setiap kali di-refresh.\nconst res = $input.first().json;\nif (!res.access_token) throw new Error('Refresh token gagal: ' + JSON.stringify(res).slice(0, 300));\n\nconst envToken = String($env.THREADS_ACCESS_TOKEN || '').trim();\nconst store = $getWorkflowStaticData('global');\nconst expiresAt = $now.plus({ seconds: Number(res.expires_in) || 0 }).toISO();\n\nstore.threadsToken = res.access_token;\nstore.threadsTokenExpiresAt = expiresAt;\nstore.envTokenFingerprint = envToken ? envToken.slice(-12) : '';\n\nreturn [{ json: { ok: true, pesan: 'Token Threads berhasil diperpanjang.', berlaku_sampai: expiresAt } }];"
+        "jsCode": "// Simpan token baru setiap akun. Token long-lived Threads berlaku 60 hari dan diperpanjang setiap kali di-refresh.\n// Kalau satu akun gagal, akun lain tetap disimpan; hasilnya diringkas untuk notifikasi Telegram.\nconst e = (k) => String($env[k] ?? '').trim();\nconst store = $getWorkflowStaticData('global');\nconst akunList = $('Ambil Token Aktif').all().map((i) => i.json);\nconst hasilRefresh = $input.all().map((i) => i.json);\n\n// Pesan error HTTP dari n8n berbentuk: 400 - \"{\\\"error\\\":{\\\"message\\\":\\\"...\\\"}}\". Ambil pesan intinya saja.\nconst alasanDari = (err) => {\n  const msg = typeof err === 'string' ? err : err?.message || (err ? JSON.stringify(err) : 'tidak ada token di respons');\n  const m = msg.match(/^(\\d{3}) - ([\\s\\S]*)$/);\n  if (m) {\n    try {\n      let isi = JSON.parse(m[2]);\n      if (typeof isi === 'string') isi = JSON.parse(isi);\n      const inti = isi?.error?.message || isi?.error_description || isi?.message;\n      if (inti) return `${inti} (HTTP ${m[1]})`;\n    } catch {}\n  }\n  return msg;\n};\n\nstore.akun = store.akun || {};\nconst ringkasan = akunList.map((akun, i) => {\n  const res = hasilRefresh[i] || {};\n  if (!res.access_token) {\n    return { no: akun.no, nama: akun.nama, ok: false, alasan: alasanDari(res.error).slice(0, 300) };\n  }\n  if (!store.akun[akun.no]) {\n    store.akun[akun.no] = {};\n    if (akun.no === 1) {\n      // Pindahkan data lama (sebelum fitur banyak akun) ke akun 1\n      for (const k of ['history', 'threadsToken', 'threadsTokenExpiresAt', 'envTokenFingerprint']) {\n        if (store[k] !== undefined) store.akun[1][k] = store[k];\n        delete store[k];\n      }\n    }\n  }\n  const envToken = e(`AKUN_${akun.no}_THREADS_ACCESS_TOKEN`) || (akun.no === 1 ? e('THREADS_ACCESS_TOKEN') : '');\n  const berlakuSampai = $now.plus({ seconds: Number(res.expires_in) || 0 }).toISO();\n  Object.assign(store.akun[akun.no], {\n    threadsToken: res.access_token,\n    threadsTokenExpiresAt: berlakuSampai,\n    envTokenFingerprint: envToken ? envToken.slice(-12) : '',\n  });\n  return { no: akun.no, nama: akun.nama, ok: true, berlaku_sampai: berlakuSampai };\n});\n\nreturn [\n  {\n    json: {\n      ok: ringkasan.every((r) => r.ok),\n      pesan: `${ringkasan.filter((r) => r.ok).length} dari ${ringkasan.length} token Threads berhasil diperpanjang.`,\n      akun: ringkasan,\n    },\n  },\n];"
       },
       "id": "36af7cf1-4fb2-e63a-cdd9-7d9f5e88c898",
       "name": "Simpan Token Baru",
@@ -832,7 +1045,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Susun pesan notifikasi Telegram. Kalau Telegram belum diatur di .env, node ini tidak mengeluarkan apa-apa\n// sehingga node \"Kirim Telegram\" tidak dijalankan.\n// TELEGRAM_NOTIFY: \"semua\" (default) = posting, mode uji, perpanjang token, dan error; \"error\" = error saja; \"off\" = mati.\nconst token = String($env.TELEGRAM_BOT_TOKEN || '').trim();\nconst chatId = String($env.TELEGRAM_CHAT_ID || '').trim();\nconst mode = String($env.TELEGRAM_NOTIFY || 'semua').trim().toLowerCase();\nif (!token || !chatId || /^(off|false|no|0)$/.test(mode)) return [];\n\nconst d = $input.first().json;\nconst MAX = 3900; // batas Telegram 4096 karakter per pesan\nconst cut = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);\nconst tanggal = (iso) => (iso ? DateTime.fromISO(iso, { setZone: true }).setLocale('id').toFormat('d LLLL yyyy, HH:mm') : '-');\n\n// Info gambar post pertama. Di pesan mode uji, link gambar disertakan supaya Telegram menampilkan pratinjaunya.\nconst gambarInfo = (g, denganLink) => {\n  if (!g) return null;\n  if (g.url) {\n    const asal = g.sumber === 'pexels' && g.fotografer ? `Pexels, ${g.fotografer}` : g.sumber;\n    return denganLink ? `🖼️ Gambar (${asal}): ${g.url}` : `🖼️ Dengan gambar (${asal})`;\n  }\n  return g.peringatan ? `⚠️ Tanpa gambar: ${g.peringatan}` : null;\n};\n\nlet messages = [];\n\nif ($('Kalau Error').isExecuted) {\n  const err = d.execution?.error || d.trigger?.error || {};\n  messages.push(\n    [\n      '❌ Threads AutoPost gagal',\n      '',\n      `Node: ${d.execution?.lastNodeExecuted || err.node?.name || '-'}`,\n      `Error: ${cut(String(err.message || 'tidak diketahui').replace(/\\s*\\[line \\d+\\]$/, ''), 500)}`,\n      err.description ? `Detail: ${cut(String(err.description), 800)}` : null,\n      d.execution?.url ? `\\nLihat di n8n: ${d.execution.url}` : null,\n    ]\n      .filter((l) => l !== null)\n      .join('\\n')\n  );\n} else if (mode === 'error') {\n  return [];\n} else if ($('Ringkasan & Riwayat').isExecuted) {\n  messages.push(\n    [\n      '✅ Utas baru terposting',\n      '',\n      `Judul: ${d.judul}`,\n      `Kategori: ${d.kategori}`,\n      `Bagian: ${d.post_ids.length}${d.topic_tag ? ` · Topik: ${d.topic_tag}` : ''}`,\n      d.antrian_baris ? `Dari antrian Google Sheets baris ${d.antrian_baris}` : null,\n      gambarInfo(d.gambar, false),\n      '',\n      d.permalink || 'Link belum tersedia, cek langsung di Threads.',\n    ]\n      .filter((l) => l !== null)\n      .join('\\n')\n  );\n} else if ($('Pratinjau (Dry Run)').isExecuted) {\n  // Kirim cerita lengkap supaya bisa dibaca dari HP. Kalau kepanjangan, dipecah jadi beberapa pesan.\n  const header = [\n    '🧪 Mode uji — cerita TIDAK diposting',\n    `Judul: ${d.judul}`,\n    `Kategori: ${d.kategori}${d.topic_tag ? ` · Topik: ${d.topic_tag}` : ''}`,\n    d.antrian_baris ? `Dari antrian baris ${d.antrian_baris} (status baris tidak diubah)` : null,\n    ...(d.antrian_peringatan || []).map((w) => `⚠️ ${w}`),\n    gambarInfo(d.gambar, true),\n  ]\n    .filter((l) => l !== null)\n    .join('\\n');\n  let cur = header;\n  for (const part of d.bagian) {\n    const block = `\\n\\n———\\n\\n${part}`;\n    if (cur.length + block.length > MAX) {\n      messages.push(cur);\n      cur = part;\n    } else {\n      cur += block;\n    }\n  }\n  messages.push(cur);\n} else if ($('Simpan Token Baru').isExecuted) {\n  messages.push(`🔑 Token Threads berhasil diperpanjang.\\nBerlaku sampai: ${tanggal(d.berlaku_sampai)}`);\n}\n\nreturn messages.map((text) => ({ json: { text } }));"
+        "jsCode": "// Susun pesan notifikasi Telegram. Kalau Telegram belum diatur di .env, node ini tidak mengeluarkan apa-apa\n// sehingga node \"Kirim Telegram\" tidak dijalankan.\n// TELEGRAM_NOTIFY: \"semua\" (default) = posting, mode uji, perpanjang token, dan error; \"error\" = error saja; \"off\" = mati.\n// Pesan untuk akun tertentu dikirim ke AKUN_n_TELEGRAM_CHAT_ID kalau diisi, kalau tidak ke TELEGRAM_CHAT_ID.\nconst e = (k) => String($env[k] ?? '').trim();\nconst token = e('TELEGRAM_BOT_TOKEN');\nconst mode = (e('TELEGRAM_NOTIFY') || 'semua').toLowerCase();\nif (!token || /^(off|false|no|0)$/.test(mode)) return [];\nconst chatUntuk = (no) => (no ? e(`AKUN_${no}_TELEGRAM_CHAT_ID`) : '') || e('TELEGRAM_CHAT_ID');\n\nconst d = $input.first().json;\nconst MAX = 3900; // batas Telegram 4096 karakter per pesan\nconst cut = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);\nconst tanggal = (iso) => (iso ? DateTime.fromISO(iso, { setZone: true }).setLocale('id').toFormat('d LLLL yyyy, HH:mm') : '-');\n// Nama akun hanya ditampilkan kalau ada lebih dari satu akun\nconst barisAkun = (a) => (a && a.jumlah > 1 ? `👤 ${a.nama}` : null);\n\n// Info gambar post pertama. Di pesan mode uji, link gambar disertakan supaya Telegram menampilkan pratinjaunya.\nconst gambarInfo = (g, denganLink) => {\n  if (!g) return null;\n  if (g.url) {\n    const asal = g.sumber === 'pexels' && g.fotografer ? `Pexels, ${g.fotografer}` : g.sumber;\n    return denganLink ? `🖼️ Gambar (${asal}): ${g.url}` : `🖼️ Dengan gambar (${asal})`;\n  }\n  return g.peringatan ? `⚠️ Tanpa gambar: ${g.peringatan}` : null;\n};\n\nlet messages = [];\nlet noAkun = null;\n\nif ($('Kalau Error').isExecuted) {\n  // Kegagalan satu akun (sub-eksekusi) dilaporkan oleh eksekusi induknya, lengkap dengan nama akunnya\n  if (d.execution?.mode === 'integrated' || d.execution?.executionContext?.parentExecutionId) return [];\n  const err = d.execution?.error || d.trigger?.error || {};\n  messages.push(\n    [\n      '❌ Threads AutoPost gagal',\n      '',\n      `Node: ${d.execution?.lastNodeExecuted || err.node?.name || '-'}`,\n      `Error: ${cut(String(err.message || 'tidak diketahui').replace(/\\s*\\[line \\d+\\]$/, ''), 500)}`,\n      err.description ? `Detail: ${cut(String(err.description), 800)}` : null,\n      d.execution?.url ? `\\nLihat di n8n: ${d.execution.url}` : null,\n    ]\n      .filter((l) => l !== null)\n      .join('\\n')\n  );\n} else if (mode === 'error') {\n  // Mode \"error saja\": perpanjangan token yang gagal tetap dilaporkan\n  if (!$('Simpan Token Baru').isExecuted || d.ok) return [];\n}\n\nif ($('Kalau Error').isExecuted) {\n  // pesan error sudah disusun di atas\n} else if ($('Ringkasan & Riwayat').isExecuted) {\n  noAkun = d.akun?.no;\n  messages.push(\n    [\n      '✅ Utas baru terposting',\n      barisAkun(d.akun),\n      '',\n      `Judul: ${d.judul}`,\n      `Kategori: ${d.kategori}`,\n      `Bagian: ${d.post_ids.length}${d.topic_tag ? ` · Topik: ${d.topic_tag}` : ''}`,\n      d.antrian_baris ? `Dari antrian Google Sheets baris ${d.antrian_baris}` : null,\n      gambarInfo(d.gambar, false),\n      '',\n      d.permalink || 'Link belum tersedia, cek langsung di Threads.',\n    ]\n      .filter((l) => l !== null)\n      .join('\\n')\n  );\n} else if ($('Pratinjau (Dry Run)').isExecuted) {\n  noAkun = d.akun?.no;\n  // Kirim cerita lengkap supaya bisa dibaca dari HP. Kalau kepanjangan, dipecah jadi beberapa pesan.\n  const header = [\n    '🧪 Mode uji — cerita TIDAK diposting',\n    barisAkun(d.akun),\n    `Judul: ${d.judul}`,\n    `Kategori: ${d.kategori}${d.topic_tag ? ` · Topik: ${d.topic_tag}` : ''}`,\n    d.antrian_baris ? `Dari antrian baris ${d.antrian_baris} (status baris tidak diubah)` : null,\n    ...(d.antrian_peringatan || []).map((w) => `⚠️ ${w}`),\n    gambarInfo(d.gambar, true),\n  ]\n    .filter((l) => l !== null)\n    .join('\\n');\n  let cur = header;\n  for (const part of d.bagian) {\n    const block = `\\n\\n———\\n\\n${part}`;\n    if (cur.length + block.length > MAX) {\n      messages.push(cur);\n      cur = part;\n    } else {\n      cur += block;\n    }\n  }\n  messages.push(cur);\n} else if ($('Simpan Token Baru').isExecuted) {\n  const banyak = d.akun.length > 1;\n  messages.push(\n    [\n      d.ok ? '🔑 Token Threads berhasil diperpanjang.' : '⚠️ Ada token Threads yang gagal diperpanjang.',\n      '',\n      ...d.akun.map((a) =>\n        a.ok\n          ? `✅ ${banyak ? `${a.nama}: ` : ''}berlaku sampai ${tanggal(a.berlaku_sampai)}`\n          : `❌ ${banyak ? `${a.nama}: ` : ''}${a.alasan}`\n      ),\n      d.ok ? null : '\\nToken yang gagal masih berlaku sampai masa 60 harinya habis. Cek tokennya, atau buat token baru.',\n    ]\n      .filter((l) => l !== null)\n      .join('\\n')\n  );\n}\n\nconst chatId = chatUntuk(noAkun);\nif (!chatId) return [];\nreturn messages.map((text) => ({ json: { text, chat_id: chatId } }));"
       },
       "id": "1b015032-c6ee-2158-6fe3-c91f9060fd1c",
       "name": "Susun Pesan Telegram",
@@ -886,7 +1099,7 @@
         "url": "={{ ($env.TELEGRAM_API_HOST || 'https://api.telegram.org').replace(/\\/+$/, '') }}/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ chat_id: $env.TELEGRAM_CHAT_ID, text: $json.text }) }}",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $json.chat_id, text: $json.text }) }}",
         "options": {
           "batching": {
             "batch": {
@@ -915,7 +1128,7 @@
       "main": [
         [
           {
-            "node": "Pakai Antrian?",
+            "node": "Daftar Akun",
             "type": "main",
             "index": 0
           }
@@ -926,7 +1139,7 @@
       "main": [
         [
           {
-            "node": "Pakai Antrian?",
+            "node": "Daftar Akun",
             "type": "main",
             "index": 0
           }
@@ -959,7 +1172,7 @@
       "main": [
         [
           {
-            "node": "Respon Diterima",
+            "node": "Akun Dikenal?",
             "type": "main",
             "index": 0
           }
@@ -973,7 +1186,127 @@
         ]
       ]
     },
+    "Akun Dikenal?": {
+      "main": [
+        [
+          {
+            "node": "Respon Diterima",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respon Akun Salah",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Respon Diterima": {
+      "main": [
+        [
+          {
+            "node": "Daftar Akun",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daftar Akun": {
+      "main": [
+        [
+          {
+            "node": "Langsung?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Langsung?": {
+      "main": [
+        [
+          {
+            "node": "Pakai Antrian?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Jeda Acak",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Jeda Acak": {
+      "main": [
+        [
+          {
+            "node": "Loop Akun",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Akun": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Jalankan Akun",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Jalankan Akun": {
+      "main": [
+        [
+          {
+            "node": "Cek Hasil Akun",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cek Hasil Akun": {
+      "main": [
+        [
+          {
+            "node": "Kirim Laporan Gagal?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Loop Akun",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Kirim Laporan Gagal?": {
+      "main": [
+        [
+          {
+            "node": "Kirim Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Saat Dipanggil": {
       "main": [
         [
           {
@@ -1035,7 +1368,7 @@
         ],
         [
           {
-            "node": "Jeda Acak",
+            "node": "Susun Prompt",
             "type": "main",
             "index": 0
           }
@@ -1043,17 +1376,6 @@
       ]
     },
     "Tandai Diproses": {
-      "main": [
-        [
-          {
-            "node": "Jeda Acak",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Jeda Acak": {
       "main": [
         [
           {

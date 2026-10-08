@@ -17,6 +17,7 @@ Fitur lain:
 - **Webhook** untuk posting kapan saja dengan topik atau ide cerita tertentu.
 - **Token Threads diperpanjang otomatis** setiap minggu (token berlaku 60 hari).
 - Topik Threads (*topic tag*) dipilih AI atau ditentukan sendiri.
+- **Banyak akun Threads** (opsional, sampai 10 akun): tiap akun bisa punya jadwal, kategori cerita, gaya bahasa, dan gambar sendiri. Kalau satu akun bermasalah, akun lain tetap jalan.
 - **Gambar di post pertama** (opsional): foto stok dari Pexels yang cocok dengan cerita, ilustrasi AI, atau gambar milikmu sendiri.
 - **Antrian Google Sheets** (opsional): tulis sendiri ide cerita (dan tanggal/jam posting) di Google Sheets; workflow mengambilnya satu per satu dan menulis status serta link post ke sheet.
 - **Notifikasi Telegram** (opsional): kabar setiap utas terposting (dengan link), cerita mode uji untuk dibaca dari HP, dan peringatan kalau ada error.
@@ -25,11 +26,11 @@ Fitur lain:
 
 ```mermaid
 flowchart LR
-  A["Jadwal Posting<br/>(cron POST_CRON)"] --> C
-  B["Webhook / Tes Manual"] --> C
+  A["Jadwal Posting<br/>(POST_CRON tiap akun)"] --> AK["Daftar Akun + jeda acak<br/>akun yang jadwalnya tiba<br/>diproses satu per satu"]
+  B["Webhook / Tes Manual"] --> AK
+  AK --> C
   S["Antrian Google Sheets<br/>(opsional)"] -.->|"ide berikutnya"| C
-  C["Siapkan Konfigurasi<br/>pilih ide, kategori & jumlah bagian"] --> D["Jeda Acak"]
-  D --> E["Claude<br/>menulis cerita"]
+  C["Siapkan Konfigurasi<br/>pilih ide, kategori & jumlah bagian"] --> E["Claude<br/>menulis cerita"]
   E --> F["Olah Cerita<br/>pecah jadi post ≤ 500 karakter"]
   F --> P["Gambar post pertama<br/>(opsional: Pexels / AI / URL)"]
   P -->|"DRY_RUN=true"| G["Pratinjau saja"]
@@ -195,8 +196,48 @@ Semua field di body opsional:
 | `jumlah_bagian` | Jumlah bagian utas (1–10). |
 | `dry_run` | `true` = hanya dibuat, `false` = langsung diposting. Kosong = ikut `DRY_RUN` di `.env`. |
 | `gambar` | URL gambar untuk post pertama. |
+| `akun` | Nomor atau nama akun (lihat [Banyak akun Threads](#banyak-akun-threads-opsional)). Kosong = akun 1. |
 
 Webhook langsung membalas `202` lalu bekerja di belakang. Hasilnya bisa dilihat di menu **Executions**. Bisa juga dipanggil dari aplikasi lain (Telegram bot, Google Sheets, shortcut HP, dsb.).
+
+## Banyak akun Threads (opsional)
+
+Satu n8n bisa mengelola sampai **10 akun Threads**. Pengaturan yang sudah ada di `.env` otomatis menjadi **akun 1**. Untuk menambah akun, isi token akun itu dengan awalan `AKUN_2_`, `AKUN_3_`, dan seterusnya:
+
+```
+AKUN_2_NAMA=Horor
+AKUN_2_THREADS_ACCESS_TOKEN=token_akun_kedua
+AKUN_2_POST_CRON="30 8,20 * * *"
+AKUN_2_STORY_NICHES="cerita horor kos-kosan|misteri rumah tua"
+```
+
+Pengaturan berikut bisa dibedakan per akun dengan awalan yang sama. Yang tidak diisi ikut pengaturan utama:
+
+| Pengaturan | Contoh |
+| --- | --- |
+| Identitas | `NAMA` (dipakai di notifikasi & webhook), `AKTIF` (`false` = akun dilewati tanpa menghapus pengaturannya) |
+| Akun Threads | `THREADS_ACCESS_TOKEN`, `THREADS_USER_ID` (keduanya **tidak** ikut akun 1, supaya tidak salah posting ke akun lain) |
+| Jadwal | `POST_CRON`, `DRY_RUN` |
+| Cerita | `STORY_NICHES`, `STORY_STYLE`, `STORY_PERSONA`, `STORY_EXTRA_INSTRUCTIONS`, `STORY_MIN_PARTS`, `STORY_MAX_PARTS`, `THREAD_NUMBERING`, `THREADS_TOPIC_TAG` |
+| AI & gambar | `AI_MODEL`, `AI_EFFORT`, `GAMBAR_SUMBER`, `GAMBAR_GAYA`, `GAMBAR_URLS`, `GAMBAR_KREDIT` |
+| Lainnya | `ANTRIAN_KOSONG`, `TELEGRAM_CHAT_ID` (notifikasi akun ini dikirim ke chat lain) |
+
+Setelah mengubah `.env`, jalankan `docker compose up -d`.
+
+**Token tiap akun:** setiap akun Threads butuh token sendiri. Di app Meta yang sama, tambahkan akun itu sebagai **Threads Tester** (Langkah 1, poin 4–5), lalu buat tokennya lewat **User Token Generator**. Cek semua token sekaligus:
+
+```bash
+docker compose exec n8n node /scripts/threads-token.js cek semua
+```
+
+**Cara kerjanya:**
+
+- Setiap jadwal tiba, workflow memilih akun yang `POST_CRON`-nya cocok dengan menit itu, lalu memproses akun-akun itu **satu per satu**. Kalau beberapa akun berjadwal sama, postingnya berurutan, berjarak sekitar 1–2 menit.
+- Setiap akun diproses sebagai **sub-eksekusi** tersendiri, jadi di menu **Executions** setiap akun punya baris sendiri. Kalau satu akun gagal (misalnya tokennya kedaluwarsa), akun lain tetap diposting, dan Telegram mengirim `❌` lengkap dengan nama akunnya.
+- Riwayat cerita dan token hasil perpanjangan disimpan terpisah per akun. Perpanjangan token mingguan berlaku untuk semua akun dan diringkas dalam satu pesan Telegram.
+- **Webhook:** pilih akun dengan field `"akun": 2` atau `"akun": "Horor"`.
+- **Antrian Google Sheets:** isi kolom `akun` dengan nomor atau nama akun supaya baris itu hanya diambil akun tersebut. Baris dengan kolom `akun` kosong boleh diambil akun mana saja.
+- **Tes Manual** di n8n memproses akun `TES_AKUN` (default `1`).
 
 ## Gambar di post pertama (opsional)
 
@@ -230,15 +271,16 @@ Kalau ingin menentukan sendiri cerita apa yang diposting (dan kapan), tulis iden
 
 Contoh isi sheet **Antrian**:
 
-| tanggal | jam | kategori | ide | jumlah_bagian | gambar | status | judul | link | catatan |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| | | kisah lucu di kantor | salah kirim chat curhat ke grup kantor | 4 | | terposting | Curhat nyasar ke grup kantor | https://www.threads.com/... | diposting 2026-10-08 19:03 |
-| | | | naik ojol nyasar ke kota sebelah | | https://contoh.com/ojol.jpg | | | | |
-| 2026-10-10 | 19:00 | cerita horor kos-kosan | | 5 | | | | | |
+| tanggal | jam | akun | kategori | ide | jumlah_bagian | gambar | status | judul | link | catatan |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| | | | kisah lucu di kantor | salah kirim chat curhat ke grup kantor | 4 | | terposting | Curhat nyasar ke grup kantor | https://www.threads.com/... | diposting 2026-10-08 19:03 |
+| | | | | naik ojol nyasar ke kota sebelah | | https://contoh.com/ojol.jpg | | | | |
+| 2026-10-10 | 19:00 | Horor | cerita horor kos-kosan | | 5 | | | | | |
 
 | Kolom | Isi |
 | --- | --- |
 | `tanggal`, `jam` | Opsional. Format tanggal `2026-10-10` atau `10/10/2026`; jam `19:00`, `19.00`, atau `7:00 PM`. Mengikuti zona waktu `GENERIC_TIMEZONE`. |
+| `akun` | Opsional, kalau memakai [banyak akun](#banyak-akun-threads-opsional). Nomor atau nama akun yang boleh mengambil baris ini. Kosong = akun mana saja. Sheet lama yang belum punya kolom ini tetap jalan. |
 | `kategori`, `ide` | Isi minimal salah satu. Kalau cuma `ide`, AI menyesuaikan kategorinya sendiri. |
 | `jumlah_bagian` | Opsional. Kosong = acak antara `STORY_MIN_PARTS` dan `STORY_MAX_PARTS`. |
 | `gambar` | Opsional. URL gambar untuk post pertama (lihat [Gambar di post pertama](#gambar-di-post-pertama-opsional)). |
@@ -310,7 +352,7 @@ Kalau Telegram gagal dikirim (misalnya chat ID salah), posting ke Threads tetap 
 
 Token long-lived Threads berlaku 60 hari. Setiap Minggu jam 03:17, workflow memperpanjang token dan menyimpan token baru di data internal workflow, jadi kamu tidak perlu mengganti `.env` tiap 2 bulan.
 
-Kalau token sempat mati (misalnya n8n mati lebih dari 60 hari, atau password Threads diganti), buat token baru seperti di Langkah 1, isi ke `.env`, lalu `docker compose up -d`. Workflow otomatis memakai token baru dari `.env` itu.
+Kalau token sempat mati (misalnya n8n mati lebih dari 60 hari, atau password Threads diganti), buat token baru seperti di Langkah 1, isi ke `.env`, lalu `docker compose up -d`. Workflow otomatis memakai token baru dari `.env` itu. Untuk akun lain, isi ke `AKUN_n_THREADS_ACCESS_TOKEN` yang sesuai.
 
 ## Memperbarui workflow
 
@@ -361,6 +403,9 @@ Perubahan yang kamu buat sendiri di editor n8n akan tertimpa, jadi catat dulu ka
 | Baris macet di status `diproses` | n8n mati di tengah proses. Kosongkan status baris itu supaya diambil lagi. |
 | Telegram: `Tanpa gambar: ...` | Gambar gagal didapat, jadi utas diposting tanpa gambar. Baca alasannya. Untuk `pexels`, cek `PEXELS_API_KEY`; untuk `ai`, generator mungkin sedang sibuk dan biasanya pulih sendiri. |
 | `Threads gagal memproses post (status ERROR ...)` | Threads tidak bisa mengambil gambarnya. Pastikan URL bisa dibuka publik dan berformat JPEG/PNG. |
+| `❌ ... 👤 <nama akun>` di Telegram | Akun itu gagal, akun lain tetap jalan. Buka link di pesan untuk melihat detailnya. Paling sering karena token akun itu kedaluwarsa: cek dengan `threads-token.js cek semua`. |
+| Webhook membalas `400` `Akun "..." tidak ditemukan` | Nomor/nama akun salah, akun itu belum punya `AKUN_n_THREADS_ACCESS_TOKEN`, atau `AKUN_n_AKTIF=false`. Pesannya menyebut daftar akun yang tersedia. |
+| Akun tidak pernah posting sesuai jadwal | Cek `AKUN_n_POST_CRON` dan pastikan sudah `docker compose up -d` setelah mengubah `.env`. |
 | Notifikasi Telegram tidak masuk | Jalankan `docker compose exec n8n node /scripts/telegram.js tes` untuk melihat pesan error-nya. Pastikan sudah mengirim `/start` ke bot. |
 
 ## Catatan
