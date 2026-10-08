@@ -1,0 +1,31 @@
+# Tambahan untuk VPS: HTTPS otomatis (Let's Encrypt) lewat Caddy di depan n8n.
+# Aktifkan dengan mengisi N8N_DOMAIN dan COMPOSE_FILE di .env (lihat docs/PANDUAN-VPS.md).
+services:
+  n8n:
+    environment:
+      - N8N_HOST=${N8N_DOMAIN:?Isi N8N_DOMAIN di .env}
+      - N8N_PROTOCOL=https
+      - N8N_PROXY_HOPS=1
+      - N8N_SECURE_COOKIE=true
+      - WEBHOOK_URL=https://${N8N_DOMAIN}/
+
+  caddy:
+    image: caddy:2.11.7-alpine
+    container_name: threads-autopost-caddy
+    restart: unless-stopped
+    depends_on:
+      - n8n
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      - N8N_DOMAIN=${N8N_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

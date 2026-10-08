@@ -51,7 +51,7 @@ Semua logika ada di satu workflow n8n: [`workflows/threads-autopost.json`](workf
 - Akun Threads.
 - Akun developer Meta (gratis) untuk akses Threads API.
 - API key Claude dari [platform.claude.com](https://platform.claude.com) (berbayar sesuai pemakaian).
-- Komputer/VPS yang **menyala terus**. Kalau n8n mati, jadwal posting ikut berhenti. Untuk posting 24 jam, pasang di VPS.
+- Komputer/VPS yang **menyala terus**. Kalau n8n mati, jadwal posting ikut berhenti. Untuk posting 24 jam, pasang di VPS: ikuti **[Panduan Pasang di VPS](docs/PANDUAN-VPS.md)**.
 
 ## Langkah 1 — Siapkan akses Threads API
 
@@ -304,7 +304,7 @@ Cara mengaktifkan:
 
 Mau dikabari kalau ada masalah saja? Isi `TELEGRAM_NOTIFY=error`. Untuk mematikan, isi `off` atau kosongkan `TELEGRAM_BOT_TOKEN`.
 
-Kalau Telegram gagal dikirim (misalnya chat ID salah), posting ke Threads tetap jalan dan tetap dianggap berhasil. Link "Lihat di n8n" pada pesan error memakai `WEBHOOK_URL`, jadi isi dengan alamat n8n yang bisa kamu buka dari HP kalau n8n ada di VPS.
+Kalau Telegram gagal dikirim (misalnya chat ID salah), posting ke Threads tetap jalan dan tetap dianggap berhasil. Link "Lihat di n8n" pada pesan error memakai `WEBHOOK_URL`. Di VPS dengan HTTPS ([cara B di panduan VPS](docs/PANDUAN-VPS.md#b-https-dengan-domain)), alamat ini diisi otomatis sehingga link-nya bisa dibuka dari HP.
 
 ## Token diperpanjang otomatis
 
@@ -328,7 +328,11 @@ Perubahan yang kamu buat sendiri di editor n8n akan tertimpa, jadi catat dulu ka
 ```
 .
 ├── docker-compose.yml          # Menjalankan n8n via Docker
+├── docker-compose.https.yml    # Tambahan HTTPS (Caddy) untuk VPS
+├── Caddyfile                   # Pengaturan Caddy untuk HTTPS
 ├── .env.example                # Template pengaturan (salin jadi .env)
+├── docs/
+│   └── PANDUAN-VPS.md          # Panduan pasang di VPS
 ├── workflows/
 │   └── threads-autopost.json   # Workflow n8n yang di-import
 ├── scripts/
@@ -363,4 +367,4 @@ Perubahan yang kamu buat sendiri di editor n8n akan tertimpa, jadi catat dulu ka
 
 - Batas Threads API: 250 post dan 1.000 balasan per 24 jam per akun. Satu utas 5 bagian memakai 1 post + 4 balasan.
 - Isi menu **Executions** n8n memuat token Threads (di output node *Siapkan Konfigurasi*). Jangan bagikan akses n8n ke orang lain, dan pakai HTTPS kalau n8n dibuka ke internet.
-- Kalau n8n dipasang di VPS dengan domain, isi `WEBHOOK_URL` dengan URL publiknya dan ubah `N8N_SECURE_COOKIE=true` setelah HTTPS aktif.
+- n8n hanya bisa dibuka dari komputer tempat ia berjalan (`http://localhost:5678`). Untuk VPS, buka lewat SSH tunnel atau HTTPS seperti di [panduan VPS](docs/PANDUAN-VPS.md); jangan membuka port 5678 ke internet.

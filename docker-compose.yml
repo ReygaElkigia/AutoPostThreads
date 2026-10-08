@@ -4,7 +4,9 @@ services:
     container_name: threads-autopost-n8n
     restart: unless-stopped
     ports:
-      - "5678:5678"
+      # Hanya bisa dibuka dari komputer/server ini sendiri (http://localhost:5678).
+      # Di VPS, buka lewat SSH tunnel atau HTTPS (lihat docs/PANDUAN-VPS.md), bukan lewat http://IP:5678.
+      - "127.0.0.1:5678:5678"
     # Semua isi .env diteruskan ke n8n, lalu dibaca workflow lewat $env
     env_file:
       - .env
